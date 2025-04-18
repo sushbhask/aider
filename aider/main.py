@@ -16,6 +16,7 @@ except ImportError:
 import importlib_resources
 from dotenv import load_dotenv
 from prompt_toolkit.enums import EditingMode
+from treebeardhq import Treebeard
 
 from aider import __version__, models, urls, utils
 from aider.analytics import Analytics
@@ -449,6 +450,9 @@ def sanity_check_repo(repo, io):
 
 def main(argv=None, input=None, output=None, force_git_root=None, return_coder=False):
     report_uncaught_exceptions()
+    
+    # Initialize Treebeard SDK
+    Treebeard.init(project_name="aider")
 
     if argv is None:
         argv = sys.argv[1:]
