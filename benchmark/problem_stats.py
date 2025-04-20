@@ -9,6 +9,8 @@ from pathlib import Path
 import yaml
 
 from aider.dump import dump  # noqa
+from treebeardhq import Log
+
 
 HARD_SET_NUM = 3  # Number of models that defines the hard set threshold
 
@@ -17,6 +19,7 @@ def get_dirs_from_leaderboard():
     # Load the leaderboard data
     with open("aider/website/_data/polyglot_leaderboard.yml") as f:
         leaderboard = yaml.safe_load(f)
+    Log.debug("Loaded leaderboard data", entry_count=len(leaderboard))
     return [(entry["dirname"], entry["model"]) for entry in leaderboard]
 
 
@@ -28,13 +31,17 @@ def load_results(dirname):
     if not benchmark_dir.exists():
         benchmark_dir = Path("tmp.benchmarks") / dirname
         if not benchmark_dir.exists():
+            Log.debug("Benchmark directory not found", requested_dir=str(dirname))
             return None
 
     all_results = []
     parse_errors = []  # Track which exercises had parse errors for this model
 
     # Look in language subdirectories under exercises/practice
-    for fname in benchmark_dir.glob("*/exercises/practice/*/.aider.results.json"):
+    result_files = list(benchmark_dir.glob("*/exercises/practice/*/.aider.results.json"))
+    Log.debug("Found result files", count=len(result_files), dir=str(benchmark_dir))
+
+    for fname in result_files:
         error = False
         try:
             results = json.loads(fname.read_text())
@@ -53,21 +60,29 @@ def load_results(dirname):
             lang = fname.parts[-5]
             exercise = f"{fname.parts[-2]}/{lang}"  # Use directory name as testcase
             parse_errors.append(exercise)
-            print(f"Bad results file {fname}")
+            Log.warn("Bad results file detected", filename=str(fname), exercise=exercise)
             continue
 
+    Log.info("Completed loading results", 
+             total_results=len(all_results), 
+             parse_error_count=len(parse_errors),
+             directory=str(benchmark_dir))
     return all_results, parse_errors
 
 
 def analyze_exercise_solutions(dirs=None, topn=None, copy_hard_set=False):
     PARSE_ERROR_M = 4  # Threshold for number of parse errors to DQ an exercise
 
+    Log.info("Starting exercise solution analysis", dirs=dirs, topn=topn, copy_hard_set=copy_hard_set)
+
     if dirs is None:
         # Use leaderboard data if no directories specified
         dir_entries = get_dirs_from_leaderboard()
+        Log.debug("Using leaderboard data for directories", entry_count=len(dir_entries))
     else:
         # Use provided directories, with dirname as model name
         dir_entries = [(d, d) for d in dirs]
+        Log.debug("Using provided directories", entry_count=len(dir_entries))
 
     # Filter out entries that don't load and sort by pass rate
     valid_entries = []
@@ -76,6 +91,7 @@ def analyze_exercise_solutions(dirs=None, topn=None, copy_hard_set=False):
     dump(dir_entries)
 
     for dirname, model in dir_entries:
+        Log.debug("Loading results for model", dirname=dirname, model=model)
         results_data = load_results(dirname)
 
         if results_data:
@@ -99,11 +115,15 @@ def analyze_exercise_solutions(dirs=None, topn=None, copy_hard_set=False):
                     0,
                 )
             valid_entries.append(((dirname, model), results, float(pass_rate)))
+            Log.debug("Added valid entry", model=model, result_count=len(results), pass_rate=pass_rate)
+        else:
+            Log.warn("No results found for model", dirname=dirname, model=model)
 
     # Sort by pass rate and take top N if specified
     valid_entries.sort(key=lambda x: x[2], reverse=True)
     if topn:
         valid_entries = valid_entries[:topn]
+        Log.info("Filtered to top N entries", topn=topn, entry_count=len(valid_entries))
 
     # Get all exercise names from a complete run
     all_exercises = set()
@@ -117,13 +137,18 @@ def analyze_exercise_solutions(dirs=None, topn=None, copy_hard_set=False):
                 try:
                     all_exercises.add(result["testcase"] + "/" + result["language"])
                 except KeyError:
+                    Log.warn("Missing testcase in results", dirname=dirname, result=result)
                     print(f"Warning: Missing testcase in {dirname}", json.dumps(result, indent=4))
+
+    Log.info("Found unique exercises", count=len(all_exercises))
 
     for (dirname, model), results, _ in valid_entries:
         if not results:
+            Log.warn("Could not load results for model", dirname=dirname, model=model)
             print(f"Could not load results for {dirname}")
             continue
 
+        model_solved_count = 0
         for result in results:
             testcase = result.get("testcase")
             if not testcase:
@@ -137,9 +162,13 @@ def analyze_exercise_solutions(dirs=None, topn=None, copy_hard_set=False):
             tests_outcomes = result.get("tests_outcomes", [])
             if tests_outcomes and tests_outcomes[-1]:
                 exercise_solutions[testcase].append(model)
+                model_solved_count += 1
+        
+        Log.debug("Processed model results", model=model, solved_count=model_solved_count, total_results=len(results))
 
     # Calculate never solved exercises
     never_solved = len(all_exercises - set(exercise_solutions.keys()))
+    Log.info("Calculated solution statistics", total_exercises=len(all_exercises), never_solved=never_solved)
 
     # Print per-exercise statistics
     print("\nExercise Solution Statistics:")
@@ -174,6 +203,8 @@ def analyze_exercise_solutions(dirs=None, topn=None, copy_hard_set=False):
     # Calculate max lengths for alignment after cleaning up paths
     max_name_len = max(len(f"{lang}/{testcase}") for lang, testcase, _, _ in exercise_stats)
 
+    Log.debug("Prepared exercise statistics", stat_count=len(exercise_stats))
+
     # Print all exercises sorted by solve rate
     print("\nAll Exercises (sorted by solve rate):")
     for i, (lang, testcase, num_solved, percent) in enumerate(exercise_stats, 1):
@@ -185,6 +216,12 @@ def analyze_exercise_solutions(dirs=None, topn=None, copy_hard_set=False):
     solved_by_all = len(
         [ex for ex, models in exercise_solutions.items() if len(models) == total_models]
     )
+
+    Log.info("Summary statistics", 
+             solved_at_least_once=solved_at_least_once, 
+             solved_by_none=solved_by_none, 
+             solved_by_all=solved_by_all,
+             total_exercises=len(all_exercises))
 
     print(f"Total exercises solved at least once: {solved_at_least_once}")
     print(f"Never solved by any model: {solved_by_none}")
@@ -211,6 +248,8 @@ def analyze_exercise_solutions(dirs=None, topn=None, copy_hard_set=False):
     for ex, models in exercise_solutions.items():
         counts[len(models)] += 1
 
+    Log.debug("Solution distribution prepared", distribution=counts)
+
     cumsum = 0
     revcumsum = sum(counts)  # Start with total number of exercises
     for i, count in enumerate(counts):
@@ -229,6 +268,11 @@ def analyze_exercise_solutions(dirs=None, topn=None, copy_hard_set=False):
         exercise for exercise, count in parse_error_counts.items() if count >= PARSE_ERROR_M
     }
 
+    Log.info("Parse error analysis", 
+             total_errors=sum(parse_error_counts.values()),
+             disqualified_count=len(disqualified_exercises),
+             parse_error_threshold=PARSE_ERROR_M)
+
     if disqualified_exercises:
         print(
             f"\nDisqualified {len(disqualified_exercises)} exercises with {PARSE_ERROR_M}+ parse"
@@ -245,6 +289,11 @@ def analyze_exercise_solutions(dirs=None, topn=None, copy_hard_set=False):
         for ex, models in exercise_solutions.items()
         if len(models) <= HARD_SET_NUM and ex not in disqualified_exercises
     }
+    
+    Log.info("Hard set analysis completed", 
+             hard_set_size=len(hard_set), 
+             hard_set_threshold=HARD_SET_NUM)
+    
     print(f"Total hard set exercises: {len(hard_set)}")
 
     # Count total problems, unsolved problems, and hard set problems by language
@@ -259,6 +308,12 @@ def analyze_exercise_solutions(dirs=None, topn=None, copy_hard_set=False):
             lang_unsolved[lang] += 1
         if exercise in hard_set:  # Exercise is in the hard set
             lang_hard_set[lang] += 1
+
+    Log.info("Compiled language statistics", 
+             total_languages=len(lang_totals), 
+             total_exercises=sum(lang_totals.values()), 
+             total_unsolved=sum(lang_unsolved.values()), 
+             total_hard_set=sum(lang_hard_set.values()))
 
     print("\nUnsolved and hard set problems by language:")
     print(f"{'Language':<12} {'Unsolved':>8} {'Hard Set':>9} {'Total':>7} {'%hardUnsolved':>8}")
@@ -294,9 +349,18 @@ def analyze_exercise_solutions(dirs=None, topn=None, copy_hard_set=False):
 
         pct = (solved_hard / len(hard_set)) * 100
         model_hard_stats.append((model, solved_hard, pct))
+        Log.debug("Model hard set performance calculated", 
+                 model=model, solved_hard=solved_hard, 
+                 hard_set_total=len(hard_set), percent=pct)
 
     # Sort by number solved
     model_hard_stats.sort(key=lambda x: x[1], reverse=True)
+
+    Log.info("Completed model hard set analysis", 
+             models_analyzed=len(model_hard_stats), 
+             top_model=model_hard_stats[0][0] if model_hard_stats else None,
+             top_solved=model_hard_stats[0][1] if model_hard_stats else 0,
+             top_percent=model_hard_stats[0][2] if model_hard_stats else 0)
 
     print("\nModel performance on hard set:")
     print(f"{'Model':<55} {'Solved':<8} {'Percent':>7}")
@@ -310,8 +374,14 @@ def analyze_exercise_solutions(dirs=None, topn=None, copy_hard_set=False):
         dst_dir = Path("tmp.benchmarks/exercism-polyglot")
 
         if dst_dir.exists():
+            Log.warn("Destination directory already exists", directory=str(dst_dir))
             print(f"\nError: Destination directory {dst_dir} already exists")
             return
+
+        Log.info("Beginning hard set copy operation", 
+                 source_dir=str(src_dir), 
+                 destination_dir=str(dst_dir),
+                 hard_set_size=len(hard_set))
 
         print(f"\nCopying hard set problems to {dst_dir}...")
 
@@ -330,10 +400,27 @@ def analyze_exercise_solutions(dirs=None, topn=None, copy_hard_set=False):
                     rel_path = problem_dir.relative_to(src_dir)
                     dst_path = dst_dir / rel_path
                     dst_path.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copytree(problem_dir, dst_path)
-                    copied_by_lang[lang] += 1
+                    try:
+                        shutil.copytree(problem_dir, dst_path)
+                        copied_by_lang[lang] += 1
+                        Log.debug("Copied hard set problem", 
+                                  language=lang, 
+                                  problem=problem_dir.name, 
+                                  destination=str(dst_path))
+                    except Exception as e:
+                        Log.error("Failed to copy hard set problem", 
+                                  error=e, 
+                                  language=lang, 
+                                  problem=problem_dir.name,
+                                  source=str(problem_dir), 
+                                  destination=str(dst_path))
 
         total_copied = sum(copied_by_lang.values())
+        Log.info("Completed hard set copy operation", 
+                 total_copied=total_copied, 
+                 languages_copied=len(copied_by_lang),
+                 copy_details=dict(copied_by_lang))
+
         print(f"\nCopied {total_copied} hard set problems:")
         for lang in sorted(copied_by_lang):
             print(f"  {lang}: {copied_by_lang[lang]}")
@@ -352,4 +439,9 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
+    Log.info("Starting exercise solution analysis", 
+             topn=args.topn, 
+             dirs=args.dirs, 
+             copy_hard_set=args.copy_hard_set)
     analyze_exercise_solutions(args.dirs if args.dirs else None, args.topn, args.copy_hard_set)
+    Log.info("Completed exercise solution analysis")
