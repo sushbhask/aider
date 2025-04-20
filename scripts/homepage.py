@@ -12,6 +12,8 @@ import yaml
 from dotenv import load_dotenv
 from google.cloud import bigquery
 from google.oauth2 import service_account
+from treebeardhq import Log
+
 
 TOKENS_PER_WEEK = "15B"
 
@@ -30,11 +32,14 @@ CACHE_DURATION = 24 * 60 * 60  # 24 hours in seconds
 def ensure_cache_dir():
     """Create the cache directory if it doesn't exist"""
     os.makedirs(CACHE_DIR, exist_ok=True)
+    Log.debug("Cache directory ensured", cache_dir=CACHE_DIR)
 
 
 def get_cache_path(package_name):
     """Get the path to the cache file for a package"""
-    return os.path.join(CACHE_DIR, f"{package_name}_downloads.json")
+    path = os.path.join(CACHE_DIR, f"{package_name}_downloads.json")
+    Log.debug("Generated cache path", package_name=package_name, path=path)
+    return path
 
 
 def read_from_cache(package_name):
@@ -45,6 +50,7 @@ def read_from_cache(package_name):
     cache_path = get_cache_path(package_name)
 
     if not os.path.exists(cache_path):
+        Log.debug("Cache file does not exist", package_name=package_name, path=cache_path)
         return None, False
 
     try:
@@ -56,11 +62,20 @@ def read_from_cache(package_name):
         current_time = time.time()
 
         if current_time - timestamp > CACHE_DURATION:
+            Log.debug("Cache expired", 
+                     package_name=package_name, 
+                     age_seconds=current_time-timestamp, 
+                     max_age=CACHE_DURATION)
             return None, False
 
-        return cache_data.get("downloads"), True
+        downloads = cache_data.get("downloads")
+        Log.debug("Read valid data from cache", 
+                 package_name=package_name, 
+                 downloads=downloads, 
+                 timestamp=timestamp)
+        return downloads, True
     except Exception as e:
-        print(f"Error reading from cache: {e}", file=sys.stderr)
+        Log.error("Error reading from cache", error=e, package_name=package_name, path=cache_path)
         return None, False
 
 
@@ -79,9 +94,13 @@ def write_to_cache(package_name, downloads):
         with open(cache_path, "w") as f:
             json.dump(cache_data, f)
 
+        Log.debug("Download statistics written to cache", 
+                 package_name=package_name, 
+                 downloads=downloads, 
+                 path=cache_path)
         return True
     except Exception as e:
-        print(f"Error writing to cache: {e}", file=sys.stderr)
+        Log.error("Error writing to cache", error=e, package_name=package_name, path=cache_path)
         return False
 
 
@@ -93,15 +112,16 @@ def get_downloads_from_bigquery(credentials_path=None, package_name="aider-chat"
     # Check if we have a valid cached value
     cached_downloads, is_valid = read_from_cache(package_name)
     if is_valid:
-        print(f"Using cached download statistics for {package_name} (valid for 24 hours)")
+        Log.info("Using cached download statistics", package_name=package_name, downloads=cached_downloads)
         return cached_downloads
 
-    print(f"Cache invalid or expired, fetching fresh download statistics for {package_name}")
+    Log.info("Cache invalid or expired, fetching fresh download statistics", package_name=package_name)
 
     try:
         # Initialize credentials if path provided
         credentials = None
         if credentials_path:
+            Log.debug("Using service account credentials", credentials_path=credentials_path)
             credentials = service_account.Credentials.from_service_account_file(
                 credentials_path, scopes=["https://www.googleapis.com/auth/cloud-platform"]
             )
@@ -129,6 +149,7 @@ def get_downloads_from_bigquery(credentials_path=None, package_name="aider-chat"
             )
         """
 
+        Log.debug("Executing BigQuery query", package_name=package_name)
         # Execute the query
         query_job = client.query(query)
         results = query_job.result()
@@ -138,14 +159,22 @@ def get_downloads_from_bigquery(credentials_path=None, package_name="aider-chat"
             downloads = row.total_downloads
             # Write the result to cache
             write_to_cache(package_name, downloads)
+            Log.info("Successfully retrieved download statistics from BigQuery", 
+                    package_name=package_name, 
+                    downloads=downloads)
             return downloads
 
+        Log.warn("No results returned from BigQuery", package_name=package_name)
         return 0
     except Exception as e:
-        print(f"Error fetching download statistics from BigQuery: {e}", file=sys.stderr)
+        Log.error("Error fetching download statistics from BigQuery", 
+                 error=e, 
+                 package_name=package_name)
         # If there was an error but we have a cached value, use it even if expired
         if cached_downloads is not None:
-            print("Using expired cached data due to BigQuery error")
+            Log.info("Using expired cached data due to BigQuery error", 
+                   package_name=package_name, 
+                   downloads=cached_downloads)
             return cached_downloads
         return None
 
@@ -160,28 +189,35 @@ def get_total_downloads(
     Otherwise uses pepy.tech API (requires api_key).
     """
     if use_bigquery:
-        print(f"Using BigQuery to fetch download statistics for {package_name}")
+        Log.info("Using BigQuery for download statistics", package_name=package_name)
         return get_downloads_from_bigquery(credentials_path, package_name)
 
     # Fall back to pepy.tech API
-    print(f"Using pepy.tech API to fetch download statistics for {package_name}")
+    Log.info("Using pepy.tech API for download statistics", package_name=package_name)
     if not api_key:
-        print("API key not provided for pepy.tech", file=sys.stderr)
+        Log.error("API key not provided for pepy.tech", package_name=package_name)
         sys.exit(1)
 
     url = f"https://api.pepy.tech/api/v2/projects/{package_name}"
     headers = {"X-API-Key": api_key}
 
     try:
+        Log.debug("Making request to pepy.tech API", package_name=package_name, url=url)
         response = requests.get(url, headers=headers)
         response.raise_for_status()  # Raise an exception for HTTP errors
 
         data = response.json()
         total_downloads = data.get("total_downloads", 0)
 
+        Log.info("Successfully retrieved download statistics from pepy.tech", 
+                package_name=package_name, 
+                downloads=total_downloads)
         return total_downloads
     except requests.exceptions.RequestException as e:
-        print(f"Error fetching download statistics from pepy.tech: {e}", file=sys.stderr)
+        Log.error("Error fetching download statistics from pepy.tech", 
+                 error=e, 
+                 package_name=package_name, 
+                 url=url)
         sys.exit(1)
 
 
@@ -193,14 +229,17 @@ def get_github_stars(repo="paul-gauthier/aider"):
     headers = {"Accept": "application/vnd.github.v3+json"}
 
     try:
+        Log.debug("Fetching GitHub stars", repo=repo, url=url)
         response = requests.get(url, headers=headers)
         response.raise_for_status()  # Raise an exception for HTTP errors
 
         data = response.json()
         stars = data.get("stargazers_count", 0)
-
+        
+        Log.info("Successfully retrieved GitHub stars", repo=repo, stars=stars)
         return stars
     except requests.exceptions.RequestException as e:
+        Log.error("Failed to fetch GitHub stars", error=e, repo=repo)
         print(f"Error fetching GitHub stars: {e}", file=sys.stderr)
         return None
 
@@ -219,16 +258,19 @@ def get_latest_release_aider_percentage():
     )
 
     try:
+        Log.debug("Reading blame data file", path=blame_path)
         with open(blame_path, "r") as f:
             blame_data = yaml.safe_load(f)
 
         if not blame_data or len(blame_data) == 0:
+            Log.warn("Empty or missing blame data", path=blame_path)
             return 0, "unknown"
 
         # Find the latest release by parsing version numbers
         latest_version = None
         latest_release = None
 
+        Log.debug("Finding latest release from blame data", release_count=len(blame_data))
         for release in blame_data:
             version_tag = release.get("end_tag", "")
             if not version_tag.startswith("v"):
@@ -242,15 +284,19 @@ def get_latest_release_aider_percentage():
                     latest_release = release
             except ValueError:
                 # Skip if version can't be parsed as integers
+                Log.warn("Could not parse version tag", version_tag=version_tag)
                 continue
 
         if latest_release:
             percentage = latest_release.get("aider_percentage", 0)
             version = latest_release.get("end_tag", "unknown")
+            Log.info("Found latest release with aider contribution", version=version, percentage=percentage)
             return percentage, version
 
+        Log.warn("No valid releases found in blame data")
         return 0, "unknown"
     except Exception as e:
+        Log.error("Error reading blame data", error=e, path=blame_path)
         print(f"Error reading blame data: {e}", file=sys.stderr)
         return 0, "unknown"
 
@@ -281,6 +327,11 @@ def generate_badges_md(downloads, stars, aider_percentage):
 
     # Round aider percentage to whole number
     aider_percent_rounded = round(aider_percentage)
+    
+    Log.debug("Generating badges markdown", 
+              downloads_formatted=downloads_formatted, 
+              stars=stars,
+              aider_percent_rounded=aider_percent_rounded)
 
     markdown = f"""  <a href="https://github.com/Aider-AI/aider/stargazers"><img alt="GitHub Stars" title="{GITHUB_STARS_TOOLTIP}"
 src="https://img.shields.io/github/stars/Aider-AI/aider?style=flat-square&logo=github&color=f1c40f&labelColor=555555"/></a>
@@ -308,11 +359,14 @@ def get_badges_md():
     use_bigquery = bigquery_env.lower() in ("true", "1", "yes") or os.path.exists(bigquery_env)
     credentials_path = bigquery_env if os.path.exists(bigquery_env) else None
 
+    Log.debug("Configuring badge generation", use_bigquery=use_bigquery, credentials_path=credentials_path)
+
     # Get API key from environment variable if not using BigQuery
     api_key = None
     if not use_bigquery:
         api_key = os.environ.get("PEPY_API_KEY")
         if not api_key:
+            Log.error("API key not provided and BigQuery not enabled")
             print(
                 (
                     "API key not provided and BigQuery not enabled. Please set PEPY_API_KEY"
@@ -329,7 +383,13 @@ def get_badges_md():
     stars = get_github_stars("paul-gauthier/aider")
 
     # Get Aider contribution percentage in latest release
-    percentage, _ = get_latest_release_aider_percentage()
+    percentage, version = get_latest_release_aider_percentage()
+
+    Log.info("Collected all badge statistics", 
+             total_downloads=total_downloads, 
+             stars=stars, 
+             aider_percentage=percentage,
+             latest_version=version)
 
     # Generate and return badges markdown
     return generate_badges_md(total_downloads, stars, percentage)
@@ -342,16 +402,21 @@ def get_badges_html():
     # Load environment variables from .env file
     load_dotenv()
 
+    Log.debug("Starting badge HTML generation")
+    
     # Check if we should use BigQuery and get credentials path
     bigquery_env = os.environ.get("USE_BIGQUERY", "false")
     use_bigquery = bigquery_env.lower() in ("true", "1", "yes") or os.path.exists(bigquery_env)
     credentials_path = bigquery_env if os.path.exists(bigquery_env) else None
+    
+    Log.debug("BigQuery configuration determined", use_bigquery=use_bigquery, credentials_path=credentials_path)
 
     # Get API key from environment variable if not using BigQuery
     api_key = None
     if not use_bigquery:
         api_key = os.environ.get("PEPY_API_KEY")
         if not api_key:
+            Log.warn("API key not provided and BigQuery not enabled")
             print(
                 (
                     "API key not provided and BigQuery not enabled. Please set PEPY_API_KEY"
@@ -363,12 +428,15 @@ def get_badges_html():
 
     # Get PyPI downloads for the default package
     total_downloads = get_total_downloads(api_key, "aider-chat", use_bigquery, credentials_path)
+    Log.debug("Retrieved PyPI downloads", total_downloads=total_downloads)
 
     # Get GitHub stars for the default repo
     stars = get_github_stars("paul-gauthier/aider")
+    Log.debug("Retrieved GitHub stars", stars=stars)
 
     # Get Aider contribution percentage in latest release
-    percentage, _ = get_latest_release_aider_percentage()
+    percentage, version = get_latest_release_aider_percentage()
+    Log.debug("Retrieved Aider contribution percentage", percentage=percentage, version=version)
 
     # Format values
     downloads_formatted = format_number(total_downloads)
@@ -384,6 +452,11 @@ def get_badges_html():
     else:
         stars_formatted = str(int(round(stars)))
     aider_percent_rounded = round(percentage)
+    
+    Log.debug("Formatted badge values", 
+              downloads_formatted=downloads_formatted, 
+              stars_formatted=stars_formatted, 
+              aider_percent_rounded=aider_percent_rounded)
 
     # Generate HTML badges
     html = f"""<a href="https://github.com/Aider-AI/aider" class="github-badge badge-stars" title="{GITHUB_STARS_TOOLTIP}">
@@ -407,6 +480,7 @@ def get_badges_html():
     <span class="badge-value">{aider_percent_rounded}%</span>
 </a>"""  # noqa
 
+    Log.info("Generated badges HTML", html_length=len(html))
     return html
 
 
@@ -418,13 +492,15 @@ def get_testimonials_js():
     readme_path = os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "README.md"
     )
-
+    
+    Log.debug("Starting testimonials extraction", readme_path=readme_path)
     testimonials = []
     in_testimonials_section = False
 
     try:
         with open(readme_path, "r", encoding="utf-8") as f:
             lines = f.readlines()
+            Log.debug("Read README.md file", line_count=len(lines))
 
             # Find the testimonials section
             for i, line in enumerate(lines):
@@ -432,6 +508,7 @@ def get_testimonials_js():
                     in_testimonials_section = True
                     # Start processing from the next line
                     start_idx = i + 1
+                    Log.debug("Found testimonials section", start_idx=start_idx)
                     break
 
             # If we found the section
@@ -440,6 +517,7 @@ def get_testimonials_js():
                     line = lines[i]
                     # If we've hit another section, stop
                     if line.startswith("##"):
+                        Log.debug("Reached end of testimonials section", line_number=i)
                         break
 
                     # Process testimonial lines
@@ -495,7 +573,12 @@ def get_testimonials_js():
                                     testimonials.append(
                                         {"text": quote_text, "author": author, "link": link}
                                     )
+                                    Log.debug("Parsed testimonial", 
+                                             author=author, 
+                                             text_length=len(quote_text),
+                                             has_link=bool(link))
                         except Exception as e:
+                            Log.error("Error parsing testimonial line", error=e, line=line)
                             print(
                                 f"Error parsing testimonial line: {line}. Error: {e}",
                                 file=sys.stderr,
@@ -504,6 +587,7 @@ def get_testimonials_js():
 
         # Format as JavaScript array with script tags
         if not testimonials:
+            Log.warn("No testimonials found in README.md")
             print("No testimonials found in README.md", file=sys.stderr)
             return "<script>\nconst testimonials = [];\n</script>"
 
@@ -519,9 +603,11 @@ def get_testimonials_js():
             js_array += "\n"
         js_array += "];\n</script>"
 
+        Log.info("Generated testimonials JavaScript", testimonial_count=len(testimonials), js_length=len(js_array))
         return js_array
 
     except Exception as e:
+        Log.error("Error reading testimonials from README", error=e)
         print(f"Error reading testimonials from README: {e}", file=sys.stderr)
         # Return empty array as fallback
         return "<script>\nconst testimonials = [];\n</script>"
@@ -530,6 +616,8 @@ def get_testimonials_js():
 def main():
     # Load environment variables from .env file
     load_dotenv()
+    
+    Log.info("Starting download statistics and GitHub stars collection")
 
     # Ensure cache directory exists
     ensure_cache_dir()
@@ -560,6 +648,7 @@ def main():
         "--credentials-path", help="Path to Google Cloud service account credentials JSON file"
     )
     args = parser.parse_args()
+    Log.debug("Parsed command line arguments", args=args)
 
     # Determine whether to use BigQuery and get credentials path
     bigquery_env = os.environ.get("USE_BIGQUERY", "false")
@@ -571,6 +660,7 @@ def main():
     credentials_path = args.credentials_path or (
         bigquery_env if os.path.exists(bigquery_env) else None
     )
+    Log.debug("BigQuery configuration determined", use_bigquery=use_bigquery, credentials_path=credentials_path)
 
     # Check for required parameters
     api_key = None
@@ -578,6 +668,7 @@ def main():
         # Get API key from args or environment variable
         api_key = args.api_key or os.environ.get("PEPY_API_KEY")
         if not api_key:
+            Log.error("Missing API key for pepy.tech", use_bigquery=use_bigquery)
             print(
                 (
                     "API key not provided and BigQuery not enabled. Please set PEPY_API_KEY"
@@ -587,6 +678,7 @@ def main():
             )
             sys.exit(1)
     elif use_bigquery and not credentials_path and not args.credentials_path:
+        Log.warn("BigQuery enabled without explicit credentials", credentials_path=credentials_path)
         print(
             (
                 "BigQuery enabled but no credentials provided. Please set"
@@ -598,21 +690,31 @@ def main():
 
     # Get PyPI downloads
     total_downloads = get_total_downloads(api_key, args.package, use_bigquery, credentials_path)
+    Log.info("Retrieved PyPI download statistics", package=args.package, total_downloads=total_downloads)
     print(f"Total downloads for {args.package}: {total_downloads:,}")
 
     # Get GitHub stars
     stars = get_github_stars(args.github_repo)
+    Log.info("Retrieved GitHub stars", repo=args.github_repo, stars=stars)
     if stars is not None:
         print(f"GitHub stars for {args.github_repo}: {stars:,}")
 
     # Get Aider contribution percentage in latest release
     percentage, version = get_latest_release_aider_percentage()
+    Log.info("Retrieved Aider contribution metrics", percentage=percentage, version=version)
     print(f"Aider wrote {percentage:.2f}% of code in the LATEST release ({version})")
 
     # Get testimonials JavaScript
     testimonials_js = get_testimonials_js()
+    Log.debug("Generated testimonials JavaScript")
     print("\nTestimonials JavaScript:")
     print(testimonials_js)
+
+    Log.info("Successfully completed statistics collection", 
+             package=args.package, 
+             total_downloads=total_downloads, 
+             stars=stars, 
+             aider_percentage=percentage)
 
 
 if __name__ == "__main__":
