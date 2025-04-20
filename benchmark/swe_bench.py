@@ -6,11 +6,16 @@ from imgcat import imgcat
 from matplotlib import rc
 
 from aider.dump import dump  # noqa: F401
+from treebeardhq import Log
+
 
 
 def plot_swe_bench(data_file, is_lite):
+    Log.info("Starting to plot SWE bench data", data_file=data_file, is_lite=is_lite)
     with open(data_file, "r") as file:
         lines = file.readlines()
+    
+    Log.debug("Loaded file content", line_count=len(lines))
 
     models = []
     pass_rates = []
@@ -30,6 +35,7 @@ def plot_swe_bench(data_file, is_lite):
             models.insert(0, model.strip())
             pass_rates.insert(0, float(pass_rate.strip()))
 
+    Log.debug("Parsed data from file", model_count=len(models), pass_rate_count=len(pass_rates))
     dump(instances)
 
     plt.rcParams["hatch.linewidth"] = 0.5
@@ -55,6 +61,8 @@ def plot_swe_bench(data_file, is_lite):
         colors = ["#17965A" if "Aider" in model else "#b3d1e6" for model in models]
     else:
         colors = ["#1A75C2" if "Aider" in model else "#b3d1e6" for model in models]
+    
+    Log.debug("Created colors array for chart", is_lite=is_lite, color_count=len(colors))
 
     bars = []
     for model, pass_rate, color in zip(models, pass_rates, colors):
@@ -121,6 +129,9 @@ def plot_swe_bench(data_file, is_lite):
     out_fname = Path(data_file.replace("-", "_"))
     plt.savefig(out_fname.with_suffix(".jpg").name)
     plt.savefig(out_fname.with_suffix(".svg").name)
+    
+    Log.info("Chart generated and saved", data_file=data_file, jpg_file=out_fname.with_suffix(".jpg").name, svg_file=out_fname.with_suffix(".svg").name)
+    
     imgcat(fig)
     ax.xaxis.label.set_color(font_color)
 
