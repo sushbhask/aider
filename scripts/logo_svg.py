@@ -11,6 +11,8 @@ import os
 import tempfile
 
 from fontTools.subset import main as subset_main
+from treebeardhq import Log
+
 
 
 def subset_font(font_path, text):
@@ -24,13 +26,16 @@ def subset_font(font_path, text):
     Returns:
         bytes: The subsetted font data
     """
+    Log.debug("Starting font subsetting", font_path=font_path, text=text)
+    
     # Create a temporary file to store the subset font
     with tempfile.NamedTemporaryFile(suffix=".ttf", delete=False) as tmp_file:
         tmp_path = tmp_file.name
-
+    
     # Get unique characters from the text
     unique_chars = set(text.lower() + text.upper())
-
+    Log.debug("Identified unique characters for subsetting", char_count=len(unique_chars))
+    
     # Create the subsetting command
     subset_args = [
         font_path,
@@ -40,17 +45,19 @@ def subset_font(font_path, text):
         "--recalc-bounds",
         "--drop-tables=",  # Don't drop any tables by default
     ]
-
+    
     # Run the subsetting
+    Log.debug("Running font subsetting operation", output_path=tmp_path)
     subset_main(subset_args)
-
+    
     # Read the subsetted font
     with open(tmp_path, "rb") as f:
         font_data = f.read()
-
+    
     # Clean up the temporary file
     os.unlink(tmp_path)
-
+    
+    Log.info("Font subsetting completed", font_path=font_path, bytes_size=len(font_data))
     return font_data
 
 
@@ -67,11 +74,14 @@ def generate_svg_with_embedded_font(font_path, text="aider", color="#14b014", ou
     Returns:
         str: The SVG content
     """
+    Log.debug("Starting SVG generation with embedded font", font_path=font_path, text=text, color=color)
+    
     # Subset the font to only include the needed characters
     font_data = subset_font(font_path, text)
 
     # Encode the font data as base64
     font_base64 = base64.b64encode(font_data).decode("utf-8")
+    Log.debug("Font data encoded to base64", base64_length=len(font_base64))
 
     # Calculate SVG dimensions based on text length
     # These values can be adjusted to modify the appearance
@@ -80,7 +90,7 @@ def generate_svg_with_embedded_font(font_path, text="aider", color="#14b014", ou
     height = 60
     text_x = width / 2  # Center point of the SVG width
     text_y = height * 0.62  # Center point of the SVG height
-
+    
     # Create the SVG with embedded font and glow effect
     svg = f"""<?xml version="1.0" encoding="UTF-8" standalone="no"?>
 <svg width="{width}" height="{height}" viewBox="0 0 {width} {height}" xmlns="http://www.w3.org/2000/svg">
@@ -114,8 +124,10 @@ def generate_svg_with_embedded_font(font_path, text="aider", color="#14b014", ou
     if output_path:
         with open(output_path, "w") as f:
             f.write(svg)
+        Log.info("SVG logo saved to file", output_path=output_path, svg_size=len(svg))
         print(f"SVG logo saved to {output_path}")
 
+    Log.info("SVG generation completed", text=text, color=color, svg_size=len(svg))
     return svg
 
 
@@ -142,9 +154,11 @@ def main():
     )
 
     args = parser.parse_args()
+    Log.debug("Parsed command line arguments", args=vars(args))
 
     # Make sure the font file exists
     if not os.path.exists(args.font):
+        Log.error("Font file not found", font_path=args.font)
         print(f"Error: Font file not found at {args.font}")
         return
 
@@ -152,6 +166,7 @@ def main():
     if args.output:
         output_dir = os.path.dirname(args.output)
         if output_dir and not os.path.exists(output_dir):
+            Log.info("Creating output directory", output_dir=output_dir)
             os.makedirs(output_dir)
 
     # Generate the SVG
@@ -166,6 +181,7 @@ def main():
         # Calculate size savings
         original_size = os.path.getsize(args.font)
         output_size = len(svg.encode("utf-8"))
+        Log.info("Size comparison", original_font_size=original_size, output_svg_size=output_size)
         print(f"Original font size: {original_size / 1024:.2f} KB")
         print(f"Output SVG size: {output_size / 1024:.2f} KB")
 

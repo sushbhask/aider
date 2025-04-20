@@ -3,6 +3,9 @@ import argparse
 from aider import urls
 
 from .dump import dump  # noqa: F401
+from treebeardhq import Log
+
+
 
 
 class DotEnvFormatter(argparse.HelpFormatter):
@@ -10,12 +13,14 @@ class DotEnvFormatter(argparse.HelpFormatter):
         res = "\n\n"
         res += "#" * (len(heading) + 3)
         res += f"\n# {heading}"
+        Log.debug("Creating section header for DotEnvFormatter", heading=heading, res=res)
         super().start_section(res)
 
     def _format_usage(self, usage, actions, groups, prefix):
         return ""
 
     def _format_text(self, text):
+        Log.debug("Generating default .env template")
         return f"""
 ##########################################################
 # Sample aider .env file.
@@ -46,6 +51,9 @@ class DotEnvFormatter(argparse.HelpFormatter):
             return
 
         parts = [""]
+        Log.debug("Formatting environment variable action", 
+                 env_var=action.env_var, 
+                 option_strings=action.option_strings)
 
         default = action.default
         if default == argparse.SUPPRESS:
@@ -69,7 +77,9 @@ class DotEnvFormatter(argparse.HelpFormatter):
             else:
                 parts.append(f"#{env_var}=\n")
 
-        return "\n".join(parts) + "\n"
+        result = "\n".join(parts) + "\n"
+        Log.debug("Formatted environment variable", env_var=action.env_var, result=result)
+        return result
 
     def _format_action_invocation(self, action):
         return ""
@@ -83,12 +93,14 @@ class YamlHelpFormatter(argparse.HelpFormatter):
         res = "\n\n"
         res += "#" * (len(heading) + 3)
         res += f"\n# {heading}"
+        Log.debug("Creating section header for YamlHelpFormatter", heading=heading, res=res)
         super().start_section(res)
 
     def _format_usage(self, usage, actions, groups, prefix):
         return ""
 
     def _format_text(self, text):
+        Log.debug("Generating default YAML template")
         return """
 ##########################################################
 # Sample .aider.conf.yml
@@ -107,6 +119,9 @@ class YamlHelpFormatter(argparse.HelpFormatter):
             return ""
 
         parts = [""]
+        Log.debug("Formatting YAML configuration action", 
+                 option_strings=action.option_strings, 
+                 action_type=type(action).__name__)
 
         metavar = action.metavar
         if not metavar and isinstance(action, argparse._StoreAction):
@@ -160,10 +175,9 @@ class YamlHelpFormatter(argparse.HelpFormatter):
             else:
                 parts.append(f"#{switch}: xxx\n")
 
-        ###
-        # parts.append(str(action))
-
-        return "\n".join(parts) + "\n"
+        result = "\n".join(parts) + "\n"
+        Log.debug("Formatted YAML configuration entry", switch=switch, result=result)
+        return result
 
     def _format_action_invocation(self, action):
         return ""
@@ -174,9 +188,11 @@ class YamlHelpFormatter(argparse.HelpFormatter):
 
 class MarkdownHelpFormatter(argparse.HelpFormatter):
     def start_section(self, heading):
+        Log.debug("Starting markdown help section", heading=heading)
         super().start_section(f"## {heading}")
 
     def _format_usage(self, usage, actions, groups, prefix):
+        Log.debug("Formatting markdown usage section", usage=usage, actions_count=len(actions) if actions else 0, groups_count=len(groups) if groups else 0)
         res = super()._format_usage(usage, actions, groups, prefix)
         quote = "```\n"
         return quote + res + quote
@@ -197,6 +213,8 @@ class MarkdownHelpFormatter(argparse.HelpFormatter):
         for switch in action.option_strings:
             if switch.startswith("--"):
                 break
+
+        Log.debug("Formatting markdown help for action", switch=switch, option_strings=action.option_strings, has_metavar=bool(metavar))
 
         if metavar:
             parts.append(f"### `{switch} {metavar}`")

@@ -16,22 +16,30 @@ from aider.args_formatter import (
 from aider.deprecated import add_deprecated_model_args
 
 from .dump import dump  # noqa: F401
+from treebeardhq import Log
+
 
 
 def resolve_aiderignore_path(path_str, git_root=None):
     path = Path(path_str)
     if path.is_absolute():
+        Log.debug("Using absolute aiderignore path", path=str(path))
         return str(path)
     elif git_root:
-        return str(Path(git_root) / path)
+        resolved_path = str(Path(git_root) / path)
+        Log.debug("Resolving aiderignore path relative to git root", path=str(path), git_root=git_root, resolved_path=resolved_path)
+        return resolved_path
+    Log.debug("Using relative aiderignore path", path=str(path))
     return str(path)
 
 
 def default_env_file(git_root):
-    return os.path.join(git_root, ".env") if git_root else ".env"
-
+    env_file = os.path.join(git_root, ".env") if git_root else ".env"
+    Log.debug("Determined default env file location", env_file=env_file, git_root=git_root)
+    return env_file
 
 def get_parser(default_config_files, git_root):
+    Log.info("Initializing argument parser", default_config_files=default_config_files, git_root=git_root)
     parser = configargparse.ArgumentParser(
         description="aider is AI pair programming in your terminal",
         add_config_file_help=True,
@@ -250,6 +258,7 @@ def get_parser(default_config_files, git_root):
 
     ##########
     group = parser.add_argument_group("History Files")
+    Log.debug("Setting up history file configuration options", git_root=git_root)
     default_input_history_file = (
         os.path.join(git_root, ".aider.input.history") if git_root else ".aider.input.history"
     )
@@ -283,6 +292,7 @@ def get_parser(default_config_files, git_root):
 
     ##########
     group = parser.add_argument_group("Output settings")
+    Log.debug("Setting up output configuration options")
     group.add_argument(
         "--dark-mode",
         action="store_true",
@@ -383,6 +393,7 @@ def get_parser(default_config_files, git_root):
 
     ##########
     group = parser.add_argument_group("Git settings")
+    Log.debug("Setting up git configuration options", git_root=git_root)
     group.add_argument(
         "--git",
         action=argparse.BooleanOptionalAction,
@@ -484,6 +495,7 @@ def get_parser(default_config_files, git_root):
         help="Enable/disable watching files for ai coding comments (default: False)",
     )
     group = parser.add_argument_group("Fixing and committing")
+    Log.debug("Adding fixing and committing argument group", group=group)
     group.add_argument(
         "--lint",
         action="store_true",
@@ -525,6 +537,7 @@ def get_parser(default_config_files, git_root):
 
     ##########
     group = parser.add_argument_group("Analytics")
+    Log.debug("Adding analytics argument group", group=group)
     group.add_argument(
         "--analytics",
         action=argparse.BooleanOptionalAction,
@@ -545,6 +558,7 @@ def get_parser(default_config_files, git_root):
 
     #########
     group = parser.add_argument_group("Upgrading")
+    Log.debug("Adding upgrading argument group", group=group)
     group.add_argument(
         "--just-check-update",
         action="store_true",
@@ -585,6 +599,7 @@ def get_parser(default_config_files, git_root):
 
     ##########
     group = parser.add_argument_group("Modes")
+    Log.debug("Adding modes argument group", group=group)
     group.add_argument(
         "--message",
         "--msg",
@@ -647,6 +662,7 @@ def get_parser(default_config_files, git_root):
     )
 
     ##########
+    Log.debug("Adding voice settings arguments", parser=parser)
     group = parser.add_argument_group("Voice settings")
     group.add_argument(
         "--voice-format",
@@ -669,6 +685,7 @@ def get_parser(default_config_files, git_root):
     )
 
     ######
+    Log.debug("Adding other settings arguments", parser=parser)
     group = parser.add_argument_group("Other settings")
     group.add_argument(
         "--file",
@@ -789,11 +806,14 @@ def get_parser(default_config_files, git_root):
     )
 
     ##########
+    Log.debug("Adding deprecated model settings arguments", parser=parser)
     group = parser.add_argument_group("Deprecated model settings")
     # Add deprecated model shortcut arguments
     add_deprecated_model_args(parser, group)
 
+    Log.info("Completed parser configuration", parser=parser)
     return parser
+
 
 
 def get_md_help():
@@ -805,7 +825,8 @@ def get_md_help():
     parser.parse_known_args()
 
     parser.formatter_class = MarkdownHelpFormatter
-
+    
+    Log.debug("Generating markdown help", columns=os.environ["COLUMNS"])
     return argparse.ArgumentParser.format_help(parser)
 
 
@@ -819,6 +840,7 @@ def get_sample_yaml():
 
     parser.formatter_class = YamlHelpFormatter
 
+    Log.debug("Generating YAML help sample", columns=os.environ["COLUMNS"])
     return argparse.ArgumentParser.format_help(parser)
 
 
@@ -832,11 +854,13 @@ def get_sample_dotenv():
 
     parser.formatter_class = DotEnvFormatter
 
+    Log.debug("Generating dotenv help sample", columns=os.environ["COLUMNS"])
     return argparse.ArgumentParser.format_help(parser)
 
 
 def main():
     arg = sys.argv[1] if len(sys.argv[1:]) else None
+    Log.info("Running help generator", format_type=arg)
 
     if arg == "md":
         print(get_md_help())

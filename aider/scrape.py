@@ -219,56 +219,21 @@ class Scraper:
 
     def html_to_markdown(self, page_source):
         from bs4 import BeautifulSoup
+from treebeardhq import Log
 
-        soup = BeautifulSoup(page_source, "html.parser")
-        soup = slimdown_html(soup)
-        page_source = str(soup)
-
-        if not self.pandoc_available:
-            return page_source
-
-        try:
-            md = pypandoc.convert_text(page_source, "markdown", format="html")
-        except OSError:
-            return page_source
-
-        md = re.sub(r"</div>", "      ", md)
-        md = re.sub(r"<div>", "     ", md)
-
-        md = re.sub(r"\n\s*\n", "\n\n", md)
-
-        return md
-
-
-def slimdown_html(soup):
-    for svg in soup.find_all("svg"):
-        svg.decompose()
-
-    if soup.img:
-        soup.img.decompose()
-
-    for tag in soup.find_all(href=lambda x: x and x.startswith("data:")):
-        tag.decompose()
-
-    for tag in soup.find_all(src=lambda x: x and x.startswith("data:")):
-        tag.decompose()
-
-    for tag in soup.find_all(True):
-        for attr in list(tag.attrs):
-            if attr != "href":
-                tag.attrs.pop(attr, None)
-
-    return soup
 
 
 def main(url):
+    Log.info("Starting to scrape URL", url=url)
     scraper = Scraper()
     content = scraper.scrape(url)
+    Log.info("Completed scraping URL", url=url, content_length=len(content) if content else 0)
     print(content)
 
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
+        Log.error("Missing URL argument")
         print("Usage: python playw.py <URL>")
         sys.exit(1)
     main(sys.argv[1])

@@ -3,6 +3,8 @@ import os
 import warnings
 
 from aider.dump import dump  # noqa: F401
+from treebeardhq import Log
+
 
 warnings.filterwarnings("ignore", category=UserWarning, module="pydantic")
 
@@ -25,6 +27,7 @@ class LazyLiteLLM:
         if name == "_lazy_module":
             return super()
         self._load_litellm()
+        Log.debug("Accessing lazy-loaded litellm attribute", attribute_name=name)
         return getattr(self._lazy_module, name)
 
     def _load_litellm(self):
@@ -33,13 +36,20 @@ class LazyLiteLLM:
 
         if VERBOSE:
             print("Loading litellm...")
-
+            
+        Log.info("Lazy-loading litellm module")
+        
         self._lazy_module = importlib.import_module("litellm")
 
         self._lazy_module.suppress_debug_info = True
         self._lazy_module.set_verbose = False
         self._lazy_module.drop_params = True
         self._lazy_module._logging._disable_debugging()
+        
+        Log.debug("Configured litellm module settings", 
+                  suppress_debug_info=self._lazy_module.suppress_debug_info,
+                  set_verbose=self._lazy_module.set_verbose,
+                  drop_params=self._lazy_module.drop_params)
 
 
 litellm = LazyLiteLLM()

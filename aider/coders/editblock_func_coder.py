@@ -4,6 +4,8 @@ from ..dump import dump  # noqa: F401
 from .base_coder import Coder
 from .editblock_coder import do_replace
 from .editblock_func_prompts import EditBlockFunctionPrompts
+from treebeardhq import Log
+
 
 
 class EditBlockFunctionCoder(Coder):
@@ -96,46 +98,61 @@ class EditBlockFunctionCoder(Coder):
         name = self.partial_response_function_call.get("name")
 
         if name and name != "replace_lines":
+            Log.warn("Unknown function call name", name=name, expected="replace_lines")
             raise ValueError(f'Unknown function_call name="{name}", use name="replace_lines"')
 
         args = self.parse_partial_args()
         if not args:
+            Log.debug("No arguments parsed, returning early")
             return
 
         edits = args.get("edits", [])
+        Log.debug("Processing file edits", edit_count=len(edits))
 
         edited = set()
         for edit in edits:
-            path = get_arg(edit, "path")
-            original = get_arg(edit, "original_lines")
-            updated = get_arg(edit, "updated_lines")
+            try:
+                path = get_arg(edit, "path")
+                original = get_arg(edit, "original_lines")
+                updated = get_arg(edit, "updated_lines")
+                
+                Log.debug("Processing edit", path=path, original_type=type(original).__name__, updated_type=type(updated).__name__)
 
-            # gpt-3.5 returns lists even when instructed to return a string!
-            if self.code_format == "list" or type(original) is list:
-                original = "\n".join(original)
-            if self.code_format == "list" or type(updated) is list:
-                updated = "\n".join(updated)
+                # gpt-3.5 returns lists even when instructed to return a string!
+                if self.code_format == "list" or type(original) is list:
+                    original = "\n".join(original)
+                if self.code_format == "list" or type(updated) is list:
+                    updated = "\n".join(updated)
 
-            if original and not original.endswith("\n"):
-                original += "\n"
-            if updated and not updated.endswith("\n"):
-                updated += "\n"
+                if original and not original.endswith("\n"):
+                    original += "\n"
+                if updated and not updated.endswith("\n"):
+                    updated += "\n"
 
-            full_path = self.allowed_to_edit(path)
-            if not full_path:
-                continue
-            content = self.io.read_text(full_path)
-            content = do_replace(full_path, content, original, updated)
-            if content:
-                self.io.write_text(full_path, content)
-                edited.add(path)
-                continue
-            self.io.tool_error(f"Failed to apply edit to {path}")
+                full_path = self.allowed_to_edit(path)
+                if not full_path:
+                    Log.warn("Not allowed to edit path", path=path)
+                    continue
+                    
+                content = self.io.read_text(full_path)
+                content = do_replace(full_path, content, original, updated)
+                if content:
+                    self.io.write_text(full_path, content)
+                    edited.add(path)
+                    Log.info("Successfully edited file", path=path)
+                    continue
+                    
+                Log.error("Failed to apply edit", path=path)
+                self.io.tool_error(f"Failed to apply edit to {path}")
+            except Exception as e:
+                Log.error("Error processing edit", error=e, edit=edit)
 
+        Log.info("Completed file updates", edited_count=len(edited), edited_files=edited)
         return edited
 
 
 def get_arg(edit, arg):
     if arg not in edit:
+        Log.error("Missing required parameter", parameter=arg, edit=edit)
         raise ValueError(f"Missing `{arg}` parameter: {edit}")
     return edit[arg]

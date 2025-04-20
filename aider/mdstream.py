@@ -12,6 +12,8 @@ from rich.syntax import Syntax
 from rich.text import Text
 
 from aider.dump import dump  # noqa: F401
+from treebeardhq import Log
+
 
 _text_prefix = """
 # Header
@@ -55,6 +57,7 @@ class NoInsetCodeBlock(CodeBlock):
     def __rich_console__(self, console, options):
         code = str(self.text).rstrip()
         syntax = Syntax(code, self.lexer_name, theme=self.theme, word_wrap=True, padding=(1, 0))
+        Log.debug("Rendering NoInsetCodeBlock", lexer_name=self.lexer_name, code_length=len(code))
         yield syntax
 
 
@@ -64,6 +67,7 @@ class LeftHeading(Heading):
     def __rich_console__(self, console, options):
         text = self.text
         text.justify = "left"  # Override justification
+        Log.debug("Rendering LeftHeading", tag=self.tag)
         if self.tag == "h1":
             # Draw a border around h1s, but keep text left-aligned
             yield Panel(
@@ -118,6 +122,7 @@ class MarkdownStream:
         # Initialize rich Live display with empty text
         self.live = Live(Text(""), refresh_per_second=1.0 / self.min_delay)
         self.live.start()
+        Log.debug("Initialized MarkdownStream", mdargs=mdargs, min_delay=self.min_delay)
 
     def _render_markdown_to_lines(self, text):
         """Render markdown text to a list of lines.
@@ -136,14 +141,18 @@ class MarkdownStream:
         output = string_io.getvalue()
 
         # Split rendered output into lines
-        return output.splitlines(keepends=True)
+        lines = output.splitlines(keepends=True)
+        Log.debug("Rendered markdown to lines", line_count=len(lines))
+        return lines
 
     def __del__(self):
         """Destructor to ensure Live display is properly cleaned up."""
         if self.live:
             try:
                 self.live.stop()
-            except Exception:
+                Log.debug("Stopped live display during cleanup")
+            except Exception as e:
+                Log.error("Failed to stop live display during cleanup", error=e)
                 pass  # Ignore any errors during cleanup
 
     def update(self, text, final=False):
@@ -166,6 +175,7 @@ class MarkdownStream:
         now = time.time()
         # Throttle updates to maintain smooth rendering
         if not final and now - self.when < self.min_delay:
+            Log.debug("Skipping update due to throttling", time_since_last=now-self.when, min_delay=self.min_delay)
             return
         self.when = now
 
@@ -176,6 +186,7 @@ class MarkdownStream:
 
         # Set min_delay to render time plus a small buffer
         self.min_delay = min(max(render_time * 10, 1.0 / 20), 2)
+        Log.debug("Adjusted min_delay based on render time", render_time=render_time, new_min_delay=self.min_delay)
 
         num_lines = len(lines)
 
@@ -192,6 +203,7 @@ class MarkdownStream:
 
             # Skip if no new lines to show above live window
             if show <= 0:
+                Log.debug("No new stable lines to display", num_lines=num_lines, num_printed=num_printed)
                 return
 
             # Get the new lines and display them
@@ -199,6 +211,7 @@ class MarkdownStream:
             show = "".join(show)
             show = Text.from_ansi(show)
             self.live.console.print(show)  # to the console above the live area
+            Log.debug("Printed new stable lines", new_lines_count=num_lines-num_printed)
 
             # Update our record of printed lines
             self.printed = lines[:num_lines]
@@ -208,6 +221,7 @@ class MarkdownStream:
             self.live.update(Text(""))
             self.live.stop()
             self.live = None
+            Log.info("Completed final markdown update", total_lines=len(lines))
             return
 
         # Update the live window with remaining lines
@@ -215,6 +229,7 @@ class MarkdownStream:
         rest = "".join(rest)
         rest = Text.from_ansi(rest)
         self.live.update(rest)
+        Log.debug("Updated live window", live_window_lines=len(lines)-num_lines)
 
     def find_minimal_suffix(self, text, match_lines=50):
         """
@@ -227,6 +242,7 @@ if __name__ == "__main__":
         code = f.read()
     _text = _text_prefix + code + _text_suffix
     _text = _text * 10
+    Log.info("Starting markdown stream demo", text_length=len(_text))
 
     pm = MarkdownStream()
     print("Using NoInsetMarkdown for code blocks with padding=0")

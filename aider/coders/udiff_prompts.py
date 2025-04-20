@@ -1,6 +1,8 @@
 # flake8: noqa: E501
 
 from .base_prompts import CoderPrompts
+from treebeardhq import Log
+
 
 
 class UnifiedDiffPrompts(CoderPrompts):
@@ -66,6 +68,7 @@ Here are the diffs for those changes:
 +        num += 1
 +        if sympy.isprime(num):
 +            count += 1
+-    return str(num)
 +    return str(num)
 ```
 """,

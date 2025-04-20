@@ -13,6 +13,8 @@ from tqdm import tqdm
 
 from aider.dump import dump
 from aider.utils import GitTemporaryDirectory
+from treebeardhq import Log
+
 
 
 class RelativeIndenter:
@@ -84,7 +86,7 @@ class RelativeIndenter:
         """
         Based on the texts, choose a unicode character that isn't in any of them.
         """
-
+        Log.debug("Initializing RelativeIndenter", text_count=len(texts))
         chars = set()
         for text in texts:
             chars.update(text)
@@ -92,23 +94,29 @@ class RelativeIndenter:
         ARROW = "←"
         if ARROW not in chars:
             self.marker = ARROW
+            Log.debug("Using default arrow marker", marker=ARROW)
         else:
             self.marker = self.select_unique_marker(chars)
+            Log.info("Using alternate marker due to collision", marker=self.marker)
 
     def select_unique_marker(self, chars):
+        Log.debug("Searching for unique marker", chars_count=len(chars))
         for codepoint in range(0x10FFFF, 0x10000, -1):
             marker = chr(codepoint)
             if marker not in chars:
+                Log.debug("Found unique marker", codepoint=codepoint, marker=marker)
                 return marker
 
+        Log.error("Failed to find unique marker character", chars_count=len(chars))
         raise ValueError("Could not find a unique marker")
 
     def make_relative(self, text):
         """
         Transform text to use relative indents.
         """
-
+        Log.debug("Converting text to relative indentation", text_length=len(text))
         if self.marker in text:
+            Log.error("Text already contains outdent marker", marker=self.marker)
             raise ValueError("Text already contains the outdent marker: {self.marker}")
 
         lines = text.splitlines(keepends=True)
@@ -129,18 +137,21 @@ class RelativeIndenter:
                 cur_indent = ""
 
             out_line = cur_indent + "\n" + line[len_indent:]
-            # dump(len_indent, change, out_line)
-            # print(out_line)
             output.append(out_line)
             prev_indent = indent
 
         res = "".join(output)
+        Log.info("Transformed text to relative indentation", 
+                 input_lines=len(lines), 
+                 output_lines=len(output), 
+                 marker=self.marker)
         return res
 
     def make_absolute(self, text):
         """
         Transform text from relative back to absolute indents.
         """
+        Log.debug("Converting text from relative to absolute indentation", text_length=len(text))
         lines = text.splitlines(keepends=True)
 
         output = []
@@ -152,8 +163,10 @@ class RelativeIndenter:
             if dent.startswith(self.marker):
                 len_outdent = len(dent)
                 cur_indent = prev_indent[:-len_outdent]
+                Log.debug("Applying outdent", outdent_length=len_outdent)
             else:
                 cur_indent = prev_indent + dent
+                Log.debug("Applying indent", indent_length=len(dent))
 
             if not non_indent.rstrip("\r\n"):
                 out_line = non_indent  # don't indent a blank line
@@ -165,42 +178,28 @@ class RelativeIndenter:
 
         res = "".join(output)
         if self.marker in res:
-            # dump(res)
+            Log.error("Marker still present in text after transformation", marker=self.marker)
             raise ValueError("Error transforming text back to absolute indents")
 
+        Log.info("Transformed text to absolute indentation", 
+                 input_lines=len(lines), 
+                 output_lines=len(output))
         return res
-
-
-# The patches are created to change S->R.
-# So all the patch offsets are relative to S.
-# But O has a lot more content. So all the offsets are very wrong.
-#
-# But patch_apply() seems to imply that once patch N is located,
-# then it adjusts the offset of the next patch.
-#
-# This is great, because once we sync up after a big gap the nearby
-# patches are close to being located right.
-# Except when indentation has been changed by GPT.
-#
-# It would help to use the diff trick to build map_S_offset_to_O_offset().
-# Then update all the S offsets in the S->R patches to be O offsets.
-# Do we also need to update the R offsets?
-#
-# What if this gets funky/wrong?
-#
 
 
 def map_patches(texts, patches, debug):
     search_text, replace_text, original_text = texts
+    
+    Log.debug("Starting patch mapping process", 
+              search_len=len(search_text), 
+              replace_len=len(replace_text), 
+              original_len=len(original_text),
+              patches_count=len(patches))
 
     dmp = diff_match_patch()
     dmp.Diff_Timeout = 5
 
     diff_s_o = dmp.diff_main(search_text, original_text)
-    # diff_r_s = dmp.diff_main(replace_text, search_text)
-
-    # dmp.diff_cleanupSemantic(diff_s_o)
-    # dmp.diff_cleanupEfficiency(diff_s_o)
 
     if debug:
         html = dmp.diff_prettyHtml(diff_s_o)
@@ -209,12 +208,14 @@ def map_patches(texts, patches, debug):
         dump(len(search_text))
         dump(len(original_text))
 
+    mapped_patches = []
     for patch in patches:
         start1 = patch.start1
         start2 = patch.start2
 
         patch.start1 = dmp.diff_xIndex(diff_s_o, start1)
         patch.start2 = dmp.diff_xIndex(diff_s_o, start2)
+        mapped_patches.append(patch)
 
         if debug:
             print()
@@ -222,8 +223,9 @@ def map_patches(texts, patches, debug):
             print(patch.start1, repr(original_text[patch.start1 : patch.start1 + 50]))
             print(patch.diffs)
             print()
-
-    return patches
+    
+    Log.debug("Completed patch mapping", original_patches=len(patches), mapped_patches=len(mapped_patches))
+    return mapped_patches
 
 
 example = """Left
@@ -239,7 +241,8 @@ Left
 def relative_indent(texts):
     ri = RelativeIndenter(texts)
     texts = list(map(ri.make_relative, texts))
-
+    
+    Log.debug("Converted texts to relative indentation", text_count=len(texts))
     return ri, texts
 
 
@@ -260,6 +263,8 @@ def line_unpad(text):
 def dmp_apply(texts, remap=True):
     debug = False
     # debug = True
+    
+    Log.info("Starting diff-match-patch apply operation", remap=remap)
 
     search_text, replace_text, original_text = texts
 
@@ -278,10 +283,14 @@ def dmp_apply(texts, remap=True):
         dmp.Match_MaxBits = 32
         dmp.Patch_Margin = 8
 
+    Log.debug("Calculating diff between search and replace text", 
+              search_len=len(search_text), 
+              replace_len=len(replace_text))
     diff = dmp.diff_main(search_text, replace_text, None)
     dmp.diff_cleanupSemantic(diff)
     dmp.diff_cleanupEfficiency(diff)
 
+    Log.debug("Creating patches from diff")
     patches = dmp.patch_make(search_text, diff)
 
     if debug:
@@ -298,31 +307,27 @@ def dmp_apply(texts, remap=True):
             print(start1, repr(replace_text[start1 : start1 + 10]))
             print(patch.diffs)
 
-        # dump(original_text)
-        # dump(search_text)
-
     if remap:
+        Log.debug("Remapping patches to original text")
         patches = map_patches(texts, patches, debug)
 
     patches_text = dmp.patch_toText(patches)
-
+    
+    Log.debug("Applying patches to original text", patch_count=len(patches))
     new_text, success = dmp.patch_apply(patches, original_text)
 
     all_success = False not in success
-
+    
     if debug:
-        # dump(new_text)
         print(patches_text)
-
-        # print(new_text)
         dump(success)
         dump(all_success)
 
-        # print(new_text)
-
     if not all_success:
+        Log.warn("Not all patches applied successfully", success=success)
         return
 
+    Log.info("Successfully applied all patches", all_success=all_success)
     return new_text
 
 
@@ -338,11 +343,16 @@ def lines_to_chars(lines, mapping):
 def dmp_lines_apply(texts):
     debug = False
     # debug = True
+    Log.debug("Beginning dmp_lines_apply", text_count=len(texts))
 
     for t in texts:
         assert t.endswith("\n"), t
 
     search_text, replace_text, original_text = texts
+    Log.debug("Extracted texts", 
+              search_text_length=len(search_text), 
+              replace_text_length=len(replace_text), 
+              original_text_length=len(original_text))
 
     dmp = diff_match_patch()
     dmp.Diff_Timeout = 5
@@ -352,14 +362,22 @@ def dmp_lines_apply(texts):
     dmp.Match_Distance = 100_000
     dmp.Match_MaxBits = 32
     dmp.Patch_Margin = 1
+    Log.debug("Configured diff_match_patch parameters", 
+              match_threshold=dmp.Match_Threshold, 
+              match_distance=dmp.Match_Distance)
 
     all_text = search_text + replace_text + original_text
     all_lines, _, mapping = dmp.diff_linesToChars(all_text, "")
+    Log.debug("Converted lines to chars", mapping_length=len(mapping))
     assert len(all_lines) == len(all_text.splitlines())
 
     search_num = len(search_text.splitlines())
     replace_num = len(replace_text.splitlines())
     original_num = len(original_text.splitlines())
+    Log.debug("Determined line counts", 
+              search_lines=search_num, 
+              replace_lines=replace_num, 
+              original_lines=original_num)
 
     search_lines = all_lines[:search_num]
     replace_lines = all_lines[search_num : search_num + replace_num]
@@ -372,8 +390,10 @@ def dmp_lines_apply(texts):
     diff_lines = dmp.diff_main(search_lines, replace_lines, None)
     dmp.diff_cleanupSemantic(diff_lines)
     dmp.diff_cleanupEfficiency(diff_lines)
+    Log.debug("Computed and cleaned up diff lines", diff_length=len(diff_lines))
 
     patches = dmp.patch_make(search_lines, diff_lines)
+    Log.debug("Created patches", patch_count=len(patches))
 
     if debug:
         diff = list(diff_lines)
@@ -386,6 +406,7 @@ def dmp_lines_apply(texts):
             print(d[0], repr(d[1]))
 
     new_lines, success = dmp.patch_apply(patches, original_lines)
+    Log.debug("Applied patches", success_count=sum(success), total_patches=len(success))
     new_text = lines_to_chars(new_lines, mapping)
 
     all_success = False not in success
@@ -398,20 +419,29 @@ def dmp_lines_apply(texts):
         # print(new_text)
 
     if not all_success:
+        Log.warn("Not all patches applied successfully")
         return
 
+    Log.info("Successfully applied all patches", 
+             new_text_length=len(new_text), 
+             all_applied=all_success)
     return new_text
 
 
 def diff_lines(search_text, replace_text):
+    Log.debug("Starting diff_lines calculation")
     dmp = diff_match_patch()
     dmp.Diff_Timeout = 5
     # dmp.Diff_EditCost = 16
     search_lines, replace_lines, mapping = dmp.diff_linesToChars(search_text, replace_text)
+    Log.debug("Converted text to line-based representation", 
+              search_lines_length=len(search_lines), 
+              replace_lines_length=len(replace_lines))
 
     diff_lines = dmp.diff_main(search_lines, replace_lines, None)
     dmp.diff_cleanupSemantic(diff_lines)
     dmp.diff_cleanupEfficiency(diff_lines)
+    Log.debug("Calculated and cleaned up diff lines", diff_count=len(diff_lines))
 
     diff = list(diff_lines)
     dmp.diff_charsToLines(diff, mapping)
@@ -427,98 +457,136 @@ def diff_lines(search_text, replace_text):
             d = " "
         for line in lines.splitlines(keepends=True):
             udiff.append(d + line)
-
+    
+    Log.info("Generated unified diff", diff_lines_count=len(udiff))
     return udiff
 
 
 def search_and_replace(texts):
+    Log.debug("Starting search_and_replace")
     search_text, replace_text, original_text = texts
 
     num = original_text.count(search_text)
     # if num > 1:
     #    raise SearchTextNotUnique()
     if num == 0:
+        Log.warn("Search text not found in original text")
         return
 
+    Log.debug("Found search text in original", occurrences=num)
     new_text = original_text.replace(search_text, replace_text)
-
+    Log.info("Completed search_and_replace", 
+             original_length=len(original_text), 
+             new_length=len(new_text))
     return new_text
 
 
 def git_cherry_pick_osr_onto_o(texts):
+    Log.debug("Starting git_cherry_pick_osr_onto_o")
     search_text, replace_text, original_text = texts
 
     with GitTemporaryDirectory() as dname:
-        repo = git.Repo(dname)
-
-        fname = Path(dname) / "file.txt"
-
-        # Make O->S->R
-        fname.write_text(original_text)
-        repo.git.add(str(fname))
-        repo.git.commit("-m", "original")
-        original_hash = repo.head.commit.hexsha
-
-        fname.write_text(search_text)
-        repo.git.add(str(fname))
-        repo.git.commit("-m", "search")
-
-        fname.write_text(replace_text)
-        repo.git.add(str(fname))
-        repo.git.commit("-m", "replace")
-        replace_hash = repo.head.commit.hexsha
-
-        # go back to O
-        repo.git.checkout(original_hash)
-
-        # cherry pick R onto original
         try:
-            repo.git.cherry_pick(replace_hash, "--minimal")
-        except (git.exc.ODBError, git.exc.GitError):
-            # merge conflicts!
-            return
+            repo = git.Repo(dname)
+            Log.debug("Created git repository", repo_dir=dname)
 
-        new_text = fname.read_text()
-        return new_text
+            fname = Path(dname) / "file.txt"
+
+            # Make O->S->R
+            fname.write_text(original_text)
+            repo.git.add(str(fname))
+            repo.git.commit("-m", "original")
+            original_hash = repo.head.commit.hexsha
+            Log.debug("Committed original text", hash=original_hash)
+
+            fname.write_text(search_text)
+            repo.git.add(str(fname))
+            repo.git.commit("-m", "search")
+            search_hash = repo.head.commit.hexsha
+            Log.debug("Committed search text", hash=search_hash)
+
+            fname.write_text(replace_text)
+            repo.git.add(str(fname))
+            repo.git.commit("-m", "replace")
+            replace_hash = repo.head.commit.hexsha
+            Log.debug("Committed replace text", hash=replace_hash)
+
+            # go back to O
+            repo.git.checkout(original_hash)
+            Log.debug("Checked out original commit")
+
+            # cherry pick R onto original
+            try:
+                repo.git.cherry_pick(replace_hash, "--minimal")
+                Log.debug("Successfully cherry-picked replace onto original")
+            except (git.exc.ODBError, git.exc.GitError) as e:
+                Log.warn("Cherry pick failed due to merge conflicts", error=e)
+                return
+
+            new_text = fname.read_text()
+            Log.info("Completed git cherry pick", 
+                     original_hash=original_hash, 
+                     replace_hash=replace_hash, 
+                     new_text_length=len(new_text))
+            return new_text
+        except Exception as e:
+            Log.error("Unexpected error in git operations", error=e)
+            raise
 
 
 def git_cherry_pick_sr_onto_so(texts):
+    Log.debug("Starting git_cherry_pick_sr_onto_so")
     search_text, replace_text, original_text = texts
 
     with GitTemporaryDirectory() as dname:
-        repo = git.Repo(dname)
-
-        fname = Path(dname) / "file.txt"
-
-        fname.write_text(search_text)
-        repo.git.add(str(fname))
-        repo.git.commit("-m", "search")
-        search_hash = repo.head.commit.hexsha
-
-        # make search->replace
-        fname.write_text(replace_text)
-        repo.git.add(str(fname))
-        repo.git.commit("-m", "replace")
-        replace_hash = repo.head.commit.hexsha
-
-        # go back to search,
-        repo.git.checkout(search_hash)
-
-        # make search->original
-        fname.write_text(original_text)
-        repo.git.add(str(fname))
-        repo.git.commit("-m", "original")
-
-        # cherry pick replace onto original
         try:
-            repo.git.cherry_pick(replace_hash, "--minimal")
-        except (git.exc.ODBError, git.exc.GitError):
-            # merge conflicts!
-            return
+            repo = git.Repo(dname)
+            Log.debug("Created git repository", repo_dir=dname)
 
-        new_text = fname.read_text()
+            fname = Path(dname) / "file.txt"
 
-        return new_text
+            fname.write_text(search_text)
+            repo.git.add(str(fname))
+            repo.git.commit("-m", "search")
+            search_hash = repo.head.commit.hexsha
+            Log.debug("Committed search text", hash=search_hash)
+
+            # make search->replace
+            fname.write_text(replace_text)
+            repo.git.add(str(fname))
+            repo.git.commit("-m", "replace")
+            replace_hash = repo.head.commit.hexsha
+            Log.debug("Committed replace text", hash=replace_hash)
+
+            # go back to search,
+            repo.git.checkout(search_hash)
+            Log.debug("Checked out search commit")
+
+            # make search->original
+            fname.write_text(original_text)
+            repo.git.add(str(fname))
+            repo.git.commit("-m", "original")
+            original_hash = repo.head.commit.hexsha
+            Log.debug("Committed original text on search branch", hash=original_hash)
+
+            # cherry pick replace onto original
+            try:
+                repo.git.cherry_pick(replace_hash, "--minimal")
+                Log.debug("Successfully cherry-picked replace onto original")
+            except (git.exc.ODBError, git.exc.GitError) as e:
+                Log.warn("Cherry pick failed due to merge conflicts", error=e)
+                return
+
+            new_text = fname.read_text()
+            Log.info("Completed git cherry pick", 
+                     search_hash=search_hash, 
+                     replace_hash=replace_hash, 
+                     original_hash=original_hash, 
+                     new_text_length=len(new_text))
+            return new_text
+        except Exception as e:
+            Log.error("Unexpected error in git operations", error=e)
+            raise
 
 
 class SearchTextNotUnique(ValueError):
@@ -569,12 +637,18 @@ def flexible_search_and_replace(texts, strategies):
     search_text and original_text and yet still achieve the desired
     edits.
     """
+    Log.info("Starting flexible search and replace", text_length=len(texts[0]))
 
     for strategy, preprocs in strategies:
         for preproc in preprocs:
+            Log.debug("Attempting strategy", strategy=strategy.__name__, preproc=preproc)
             res = try_strategy(texts, strategy, preproc)
             if res:
+                Log.info("Found successful strategy", strategy=strategy.__name__, preproc=preproc)
                 return res
+    
+    Log.warn("No successful strategy found for search and replace")
+    return None
 
 
 def reverse_lines(text):
@@ -587,6 +661,9 @@ def try_strategy(texts, strategy, preproc):
     preproc_strip_blank_lines, preproc_relative_indent, preproc_reverse = preproc
     ri = None
 
+    Log.debug("Preprocessing text", strip_blank_lines=preproc_strip_blank_lines, 
+              relative_indent=preproc_relative_indent, reverse=preproc_reverse)
+
     if preproc_strip_blank_lines:
         texts = strip_blank_lines(texts)
     if preproc_relative_indent:
@@ -594,15 +671,19 @@ def try_strategy(texts, strategy, preproc):
     if preproc_reverse:
         texts = list(map(reverse_lines, texts))
 
+    Log.debug("Executing strategy", strategy=strategy.__name__)
     res = strategy(texts)
 
     if res and preproc_reverse:
+        Log.debug("Reversing result lines")
         res = reverse_lines(res)
 
     if res and preproc_relative_indent:
         try:
+            Log.debug("Converting relative indentation to absolute")
             res = ri.make_absolute(res)
-        except ValueError:
+        except ValueError as e:
+            Log.error("Failed to make absolute indentation", error=e)
             return
 
     return res
@@ -621,17 +702,23 @@ def read_text(fname):
 
 def proc(dname):
     dname = Path(dname)
+    Log.info("Processing directory", directory=str(dname))
 
     try:
         search_text = read_text(dname / "search")
         replace_text = read_text(dname / "replace")
         original_text = read_text(dname / "original")
-    except FileNotFoundError:
+    except FileNotFoundError as e:
+        Log.error("Required files not found", error=e, directory=str(dname))
         return
 
     ####
 
     texts = search_text, replace_text, original_text
+    Log.debug("Loaded text files", 
+              search_length=len(search_text), 
+              replace_length=len(replace_text), 
+              original_length=len(original_text))
 
     strategies = [
         # (search_and_replace, all_preprocs),
@@ -665,8 +752,20 @@ def proc(dname):
             if rev_lines:
                 method += "r"
 
+            Log.debug("Trying strategy with preprocessing", 
+                      method=method, 
+                      strategy=strategy.__name__, 
+                      strip_blank=strip_blank, 
+                      rel_indent=rel_indent, 
+                      rev_lines=rev_lines)
+            
             res = try_strategy(texts, strategy, preproc)
             patched[method] = res
+            
+            if res:
+                Log.debug("Strategy produced a result", method=method, result_length=len(res))
+            else:
+                Log.debug("Strategy failed to produce a result", method=method)
 
     results = []
     for method, res in patched.items():
@@ -680,13 +779,17 @@ def proc(dname):
             correct = (dname / "correct").read_text()
             if res == correct:
                 res = "pass"
+                Log.info("Method produced correct result", method=method, directory=str(dname))
             else:
                 res = "WRONG"
+                Log.warn("Method produced incorrect result", method=method, directory=str(dname))
         else:
             res = "fail"
+            Log.debug("Method failed to produce a result", method=method, directory=str(dname))
 
         results.append((method, res))
 
+    Log.info("Processing complete", directory=str(dname), num_results=len(results))
     return results
 
 
@@ -700,13 +803,17 @@ def colorize_result(result):
 
 
 def main(dnames):
+    Log.info("Starting processing of directories", count=len(dnames))
     all_results = []
     for dname in tqdm(dnames):
         dname = Path(dname)
+        Log.debug("Processing directory", directory=str(dname))
         results = proc(dname)
         for method, res in results:
             all_results.append((dname, method, res))
             # print(dname, method, colorize_result(res))
+    
+    Log.debug("Collected all results", result_count=len(all_results))
 
     # Create a 2D table with directories along the right and methods along the top
     # Collect all unique methods and directories
@@ -714,7 +821,8 @@ def main(dnames):
     for _, method, _ in all_results:
         if method not in methods:
             methods.append(method)
-
+    
+    Log.debug("Identified unique methods", methods=methods, count=len(methods))
     directories = dnames
 
     # Sort directories by decreasing number of 'pass' results
@@ -724,6 +832,7 @@ def main(dnames):
         )
         for dname in directories
     }
+    Log.debug("Calculated pass counts for directories", pass_counts=pass_counts)
     directories.sort(key=lambda dname: pass_counts[dname], reverse=True)
 
     # Create a results matrix
@@ -732,6 +841,8 @@ def main(dnames):
     # Populate the results matrix
     for dname, method, res in all_results:
         results_matrix[str(dname)][method] = res
+    
+    Log.debug("Results matrix created", matrix_size=f"{len(directories)}x{len(methods)}")
 
     # Print the 2D table
     # Print the header
@@ -750,8 +861,12 @@ def main(dnames):
             fmt = "{:<" + str(res_l) + "}"
             print(fmt.format(colorized_res), end="")
         print()
+    
+    Log.info("Completed results table generation", directory_count=len(directories), method_count=len(methods))
 
 
 if __name__ == "__main__":
+    Log.info("Starting main execution", args=sys.argv[1:])
     status = main(sys.argv[1:])
+    Log.info("Execution completed", status=status)
     sys.exit(status)

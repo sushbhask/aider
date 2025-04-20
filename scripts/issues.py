@@ -9,14 +9,19 @@ from datetime import datetime
 import requests
 from dotenv import load_dotenv
 from tqdm import tqdm
+from treebeardhq import Log
+
 
 
 def has_been_reopened(issue_number):
     timeline_url = f"{GITHUB_API_URL}/repos/{REPO_OWNER}/{REPO_NAME}/issues/{issue_number}/timeline"
+    Log.debug("Fetching issue timeline", issue_number=issue_number, url=timeline_url)
     response = requests.get(timeline_url, headers=headers)
     response.raise_for_status()
     events = response.json()
-    return any(event["event"] == "reopened" for event in events if "event" in event)
+    reopened = any(event["event"] == "reopened" for event in events if "event" in event)
+    Log.debug("Checked issue reopened status", issue_number=issue_number, reopened=reopened, event_count=len(events))
+    return reopened
 
 
 # Load environment variables from .env file
@@ -75,6 +80,7 @@ def get_issues(state="open"):
     per_page = 100
 
     # First, get the total count of issues
+    Log.info("Fetching initial issues to determine count", state=state)
     response = requests.get(
         f"{GITHUB_API_URL}/repos/{REPO_OWNER}/{REPO_NAME}/issues",
         headers=headers,
@@ -83,9 +89,11 @@ def get_issues(state="open"):
     response.raise_for_status()
     total_count = int(response.headers.get("Link", "").split("page=")[-1].split(">")[0])
     total_pages = (total_count + per_page - 1) // per_page
+    Log.debug("Calculated pagination details", total_count=total_count, total_pages=total_pages, per_page=per_page)
 
     with tqdm(total=total_pages, desc="Collecting issues", unit="page") as pbar:
         while True:
+            Log.debug("Fetching page of issues", page=page, state=state)
             response = requests.get(
                 f"{GITHUB_API_URL}/repos/{REPO_OWNER}/{REPO_NAME}/issues",
                 headers=headers,
@@ -94,26 +102,31 @@ def get_issues(state="open"):
             response.raise_for_status()
             page_issues = response.json()
             if not page_issues:
+                Log.debug("No more issues found", page=page)
                 break
             issues.extend(page_issues)
             page += 1
             pbar.update(1)
+    Log.info("Completed fetching all issues", total_issues=len(issues), state=state)
     return issues
 
 
 def group_issues_by_subject(issues):
     grouped_issues = defaultdict(list)
     pattern = r"Uncaught .+ in .+ line \d+"
+    Log.debug("Grouping issues by subject", total_issues=len(issues))
     for issue in issues:
         if re.search(pattern, issue["title"]) and not has_been_reopened(issue["number"]):
             subject = issue["title"]
             grouped_issues[subject].append(issue)
+    Log.info("Grouped issues by subject", groups_count=len(grouped_issues))
     return grouped_issues
 
 
 def find_oldest_issue(subject, all_issues):
     oldest_issue = None
     oldest_date = datetime.now()
+    Log.debug("Finding oldest issue for subject", subject=subject)
 
     for issue in all_issues:
         if issue["title"] == subject and not has_been_reopened(issue["number"]):
@@ -122,12 +135,21 @@ def find_oldest_issue(subject, all_issues):
                 oldest_date = created_at
                 oldest_issue = issue
 
+    if oldest_issue:
+        Log.info("Found oldest issue for subject", 
+                issue_number=oldest_issue["number"], 
+                created_at=oldest_date.isoformat(),
+                state=oldest_issue["state"])
+    else:
+        Log.warn("No oldest issue found for subject", subject=subject)
+    
     return oldest_issue
 
 
 def comment_and_close_duplicate(issue, oldest_issue):
     # Skip if issue is labeled as priority
     if "priority" in [label["name"] for label in issue["labels"]]:
+        Log.info("Skipping priority issue", issue_number=issue["number"])
         print(f"  - Skipping priority issue #{issue['number']}")
         return
 
@@ -139,18 +161,25 @@ def comment_and_close_duplicate(issue, oldest_issue):
     comment_body = DUPLICATE_COMMENT.format(oldest_issue_number=oldest_issue["number"])
 
     # Post comment
+    Log.debug("Posting duplicate comment", issue_number=issue["number"], oldest_issue_number=oldest_issue["number"])
     response = requests.post(comment_url, headers=headers, json={"body": comment_body})
     response.raise_for_status()
 
     # Close issue
+    Log.debug("Closing duplicate issue", issue_number=issue["number"])
     response = requests.patch(close_url, headers=headers, json={"state": "closed"})
     response.raise_for_status()
 
+    Log.info("Commented and closed duplicate issue", 
+             issue_number=issue["number"], 
+             duplicates_issue=oldest_issue["number"])
     print(f"  - Commented and closed issue #{issue['number']}")
 
 
 def find_unlabeled_with_paul_comments(issues):
     unlabeled_issues = []
+    Log.debug("Finding unlabeled issues with paul-gauthier comments", total_issues=len(issues))
+    
     for issue in issues:
         # Skip pull requests
         if "pull_request" in issue:
@@ -161,17 +190,26 @@ def find_unlabeled_with_paul_comments(issues):
             comments_url = (
                 f"{GITHUB_API_URL}/repos/{REPO_OWNER}/{REPO_NAME}/issues/{issue['number']}/comments"
             )
+            Log.debug("Fetching comments for unlabeled issue", issue_number=issue["number"])
             response = requests.get(comments_url, headers=headers)
             response.raise_for_status()
             comments = response.json()
 
             # Check if paul-gauthier has commented
-            if any(comment["user"]["login"] == "paul-gauthier" for comment in comments):
+            has_paul_comment = any(comment["user"]["login"] == "paul-gauthier" for comment in comments)
+            if has_paul_comment:
+                Log.debug("Found paul-gauthier comment on unlabeled issue", 
+                          issue_number=issue["number"], 
+                          comment_count=len(comments))
                 unlabeled_issues.append(issue)
+    
+    Log.info("Completed finding unlabeled issues with paul-gauthier comments", 
+             found_issues=len(unlabeled_issues))
     return unlabeled_issues
 
 
 def handle_unlabeled_issues(all_issues, auto_yes):
+    Log.info("Starting to find unlabeled issues with paul-gauthier comments")
     print("\nFinding unlabeled issues with paul-gauthier comments...")
     unlabeled_issues = [
         issue
@@ -180,9 +218,11 @@ def handle_unlabeled_issues(all_issues, auto_yes):
     ]
 
     if not unlabeled_issues:
+        Log.debug("No unlabeled issues with paul-gauthier comments found")
         print("No unlabeled issues with paul-gauthier comments found.")
         return
 
+    Log.info("Found unlabeled issues with paul-gauthier comments", count=len(unlabeled_issues))
     print(f"\nFound {len(unlabeled_issues)} unlabeled issues with paul-gauthier comments:")
     for issue in unlabeled_issues:
         print(f"  - #{issue['number']}: {issue['title']} {issue['html_url']}")
@@ -190,19 +230,24 @@ def handle_unlabeled_issues(all_issues, auto_yes):
     if not auto_yes:
         confirm = input("\nDo you want to add the 'question' label to these issues? (y/n): ")
         if confirm.lower() != "y":
+            Log.debug("User chose to skip labeling")
             print("Skipping labeling.")
             return
 
+    Log.info("Adding 'question' label to issues", count=len(unlabeled_issues))
     print("\nAdding 'question' label to issues...")
     for issue in unlabeled_issues:
         url = f"{GITHUB_API_URL}/repos/{REPO_OWNER}/{REPO_NAME}/issues/{issue['number']}"
         response = requests.patch(url, headers=headers, json={"labels": ["question"]})
         response.raise_for_status()
+        Log.debug("Added 'question' label to issue", issue_number=issue['number'])
         print(f"  - Added 'question' label to #{issue['number']}")
 
 
 def handle_stale_issues(all_issues, auto_yes):
+    Log.info("Starting to check for stale question issues")
     print("\nChecking for stale question issues...")
+    stale_issues_count = 0
 
     for issue in all_issues:
         # Skip if not open, not a question, already stale, or has been reopened
@@ -222,12 +267,15 @@ def handle_stale_issues(all_issues, auto_yes):
         # Check if issue is stale (no activity for 14 days)
         days_inactive = (datetime.now() - latest_activity).days
         if days_inactive >= 14:
+            stale_issues_count += 1
+            Log.info("Found stale issue", issue_number=issue['number'], days_inactive=days_inactive)
             print(f"\nStale issue found: #{issue['number']}: {issue['title']}\n{issue['html_url']}")
             print(f"  No activity for {days_inactive} days")
 
             if not auto_yes:
                 confirm = input("Add stale label and comment? (y/n): ")
                 if confirm.lower() != "y":
+                    Log.debug("User chose to skip stale issue", issue_number=issue['number'])
                     print("Skipping this issue.")
                     continue
 
@@ -243,11 +291,17 @@ def handle_stale_issues(all_issues, auto_yes):
             response = requests.patch(url, headers=headers, json={"labels": ["question", "stale"]})
             response.raise_for_status()
 
+            Log.debug("Added stale label and comment", issue_number=issue['number'])
             print(f"  Added stale label and comment to #{issue['number']}")
+    
+    Log.info("Completed checking for stale issues", stale_issues_found=stale_issues_count)
 
 
 def handle_stale_closing(all_issues, auto_yes):
+    Log.info("Starting to check for issues to close or unstale")
     print("\nChecking for issues to close or unstale...")
+    issues_unstaled = 0
+    issues_closed = 0
 
     for issue in all_issues:
         # Skip if not open, not stale, or is priority
@@ -291,12 +345,15 @@ def handle_stale_closing(all_issues, auto_yes):
         ]
 
         if new_comments:
+            Log.info("Found new activity on stale issue", 
+                     issue_number=issue['number'], comment_count=len(new_comments))
             print(f"\nFound new activity on stale issue #{issue['number']}: {issue['title']}")
             print(f"  {len(new_comments)} new comments since stale label")
 
             if not auto_yes:
                 confirm = input("Remove stale label? (y/n): ")
                 if confirm.lower() != "y":
+                    Log.debug("User chose to skip unstaling", issue_number=issue['number'])
                     print("Skipping this issue.")
                     continue
 
@@ -304,17 +361,22 @@ def handle_stale_closing(all_issues, auto_yes):
             url = f"{GITHUB_API_URL}/repos/{REPO_OWNER}/{REPO_NAME}/issues/{issue['number']}"
             response = requests.patch(url, headers=headers, json={"labels": ["question"]})
             response.raise_for_status()
+            Log.debug("Removed stale label", issue_number=issue['number'])
             print(f"  Removed stale label from #{issue['number']}")
+            issues_unstaled += 1
         else:
             # Check if it's been 7 days since stale label
             days_stale = (datetime.now() - latest_stale).days
             if days_stale >= 7:
+                Log.info("Found stale issue ready for closing", 
+                         issue_number=issue['number'], days_stale=days_stale)
                 print(f"\nStale issue ready for closing #{issue['number']}: {issue['title']}")
                 print(f"  No activity for {days_stale} days since stale label")
 
                 if not auto_yes:
                     confirm = input("Close this issue? (y/n): ")
                     if confirm.lower() != "y":
+                        Log.debug("User chose to skip closing stale issue", issue_number=issue['number'])
                         print("Skipping this issue.")
                         continue
 
@@ -329,11 +391,17 @@ def handle_stale_closing(all_issues, auto_yes):
                 url = f"{GITHUB_API_URL}/repos/{REPO_OWNER}/{REPO_NAME}/issues/{issue['number']}"
                 response = requests.patch(url, headers=headers, json={"state": "closed"})
                 response.raise_for_status()
+                Log.debug("Closed stale issue", issue_number=issue['number'])
                 print(f"  Closed issue #{issue['number']}")
+                issues_closed += 1
 
 
 def handle_fixed_issues(all_issues, auto_yes):
     print("\nChecking for fixed enhancement and bug issues to close...")
+    Log.info("Starting to check for fixed issues to close", issue_count=len(all_issues))
+
+    issues_processed = 0
+    issues_closed = 0
 
     for issue in all_issues:
         # Skip if not open, doesn't have fixed label, or is priority
@@ -347,6 +415,8 @@ def handle_fixed_issues(all_issues, auto_yes):
         if not (is_enhancement or is_bug):
             continue
 
+        issues_processed += 1
+        
         # Find when the fixed label was added
         timeline_url = (
             f"{GITHUB_API_URL}/repos/{REPO_OWNER}/{REPO_NAME}/issues/{issue['number']}/timeline"
@@ -370,6 +440,12 @@ def handle_fixed_issues(all_issues, auto_yes):
 
         if days_fixed >= 21:
             issue_type = "enhancement" if is_enhancement else "bug"
+            Log.debug("Found fixed issue ready for closing", 
+                     issue_number=issue['number'], 
+                     issue_title=issue['title'], 
+                     issue_type=issue_type, 
+                     days_fixed=days_fixed)
+            
             print(f"\nFixed {issue_type} ready for closing #{issue['number']}: {issue['title']}")
             print(f"  Has been marked fixed for {days_fixed} days")
 
@@ -391,14 +467,30 @@ def handle_fixed_issues(all_issues, auto_yes):
             url = f"{GITHUB_API_URL}/repos/{REPO_OWNER}/{REPO_NAME}/issues/{issue['number']}"
             response = requests.patch(url, headers=headers, json={"state": "closed"})
             response.raise_for_status()
+            issues_closed += 1
+            Log.info("Closed fixed issue", 
+                    issue_number=issue['number'], 
+                    issue_type=issue_type, 
+                    days_fixed=days_fixed)
             print(f"  Closed issue #{issue['number']}")
+
+    Log.info("Completed fixed issues processing", 
+            issues_processed=issues_processed, 
+            issues_closed=issues_closed)
 
 
 def handle_duplicate_issues(all_issues, auto_yes):
     open_issues = [issue for issue in all_issues if issue["state"] == "open"]
     grouped_open_issues = group_issues_by_subject(open_issues)
 
+    Log.info("Starting duplicate issues check", 
+            total_open_issues=len(open_issues), 
+            subject_groups=len(grouped_open_issues))
     print("Looking for duplicate issues (skipping reopened issues)...")
+    
+    total_processed = 0
+    total_closed = 0
+    
     for subject, issues in grouped_open_issues.items():
         oldest_issue = find_oldest_issue(subject, all_issues)
         if not oldest_issue:
@@ -409,6 +501,11 @@ def handle_duplicate_issues(all_issues, auto_yes):
         if len(related_issues) <= 1:
             continue
 
+        Log.debug("Found potential duplicate issue group", 
+                subject=subject, 
+                issue_count=len(issues), 
+                oldest_issue_number=oldest_issue["number"])
+        
         print(f"\nIssue: {subject}")
         print(f"Open issues: {len(issues)}")
         sorted_issues = sorted(issues, key=lambda x: x["number"], reverse=True)
@@ -426,12 +523,26 @@ def handle_duplicate_issues(all_issues, auto_yes):
                 print("Skipping this group of issues.")
                 continue
 
+        issues_closed_in_group = 0
+        total_processed += len(issues) - 1  # All except oldest
+
         for issue in issues:
             if issue["number"] != oldest_issue["number"]:
                 comment_and_close_duplicate(issue, oldest_issue)
+                issues_closed_in_group += 1
+                total_closed += 1
 
+        Log.info("Processed duplicate issue group", 
+                subject=subject, 
+                oldest_issue_number=oldest_issue["number"], 
+                issues_closed=issues_closed_in_group)
+        
         if oldest_issue["state"] == "open":
             print(f"Oldest issue #{oldest_issue['number']} left open")
+
+    Log.info("Completed duplicate issues processing", 
+            total_groups_processed=len(grouped_open_issues), 
+            total_issues_closed=total_closed)
 
 
 def main():
@@ -442,16 +553,21 @@ def main():
     args = parser.parse_args()
 
     if not TOKEN:
+        Log.error("Missing GitHub token", error="GITHUB_TOKEN environment variable not set")
         print("Error: Missing GITHUB_TOKEN environment variable. Please check your .env file.")
         return
 
+    Log.info("Starting GitHub issue management script", auto_yes=args.yes)
     all_issues = get_issues("all")
+    Log.info("Retrieved all issues", count=len(all_issues))
 
     handle_unlabeled_issues(all_issues, args.yes)
     handle_stale_issues(all_issues, args.yes)
     handle_stale_closing(all_issues, args.yes)
     handle_duplicate_issues(all_issues, args.yes)
     handle_fixed_issues(all_issues, args.yes)
+    
+    Log.info("GitHub issue management script completed")
 
 
 if __name__ == "__main__":

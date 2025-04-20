@@ -6,6 +6,8 @@ import sys
 import time
 
 import requests
+from treebeardhq import Log
+
 
 
 def get_default_branch(owner, repo):
@@ -14,8 +16,11 @@ def get_default_branch(owner, repo):
     try:
         response = requests.get(api_url)
         response.raise_for_status()
-        return response.json().get("default_branch")
-    except requests.exceptions.RequestException:
+        default_branch = response.json().get("default_branch")
+        Log.debug("Fetched default branch from GitHub API", owner=owner, repo=repo, default_branch=default_branch)
+        return default_branch
+    except requests.exceptions.RequestException as e:
+        Log.warn("Failed to get default branch from GitHub API", owner=owner, repo=repo, error=e)
         return None
 
 
@@ -27,6 +32,7 @@ def try_download_tags(owner, repo, branch, directory, output_path):
     else:
         tags_url = f"{base_url}/queries/tags.scm"
 
+    Log.debug("Attempting to download tags from URL", owner=owner, repo=repo, branch=branch, url=tags_url)
     try:
         response = requests.get(tags_url)
         response.raise_for_status()
@@ -34,8 +40,10 @@ def try_download_tags(owner, repo, branch, directory, output_path):
         # Save the file
         with open(output_path, "w") as f:
             f.write(response.text)
+        Log.info("Successfully downloaded and saved tags file", owner=owner, repo=repo, branch=branch, output_path=output_path)
         return True
-    except requests.exceptions.RequestException:
+    except requests.exceptions.RequestException as e:
+        Log.debug("Failed to download tags", owner=owner, repo=repo, branch=branch, error=e)
         return False
 
 
@@ -56,7 +64,9 @@ def main():
         # Load the language definitions
         with open(lang_def_path, "r") as f:
             lang_defs = json.load(f)
+        Log.info("Loaded language definitions", file_path=lang_def_path, language_count=len(lang_defs))
     except Exception as e:
+        Log.error("Error loading language definitions", file_path=lang_def_path, error=e)
         print(f"Error loading language definitions: {e}")
         sys.exit(1)
 
@@ -69,9 +79,11 @@ def main():
     for lang, config in lang_defs.items():
         # Extract repo URL from the config
         repo_url = config.get("repo")
+        Log.debug("Processing language", language=lang, repo_url=repo_url)
         print(f"Processing {lang} ({repo_url})...")
 
         if not repo_url:
+            Log.warn("Skipping language due to missing repository URL", language=lang)
             print(f"Skipping {lang}: No repository URL found")
             continue
 
@@ -79,17 +91,20 @@ def main():
 
         # Parse the GitHub repository URL
         if "github.com" not in repo_url:
+            Log.warn("Skipping non-GitHub repository", language=lang, repo_url=repo_url)
             print(f"Skipping {lang}: Not a GitHub repository")
             continue
 
         # Extract the owner and repo name from the URL
         parts = repo_url.rstrip("/").split("/")
         if len(parts) < 5:
+            Log.warn("Skipping due to invalid GitHub URL format", language=lang, repo_url=repo_url, url_parts=parts)
             print(f"Skipping {lang}: Invalid GitHub URL format")
             continue
 
         owner = parts[-2]
         repo = parts[-1]
+        Log.debug("Extracted GitHub repository info", language=lang, owner=owner, repo=repo)
 
         # Create output directory and set output file path
         os.makedirs(output_dir, exist_ok=True)
@@ -97,6 +112,7 @@ def main():
 
         # Skip if file already exists
         if os.path.exists(output_file):
+            Log.debug("Skipping existing tags file", language=lang, output_file=output_file)
             print(f"Skipping {lang}: tags.scm already exists")
             successes += 1
             continue
@@ -123,6 +139,8 @@ def main():
             if branch not in branches_to_try:
                 branches_to_try.append(branch)
 
+        Log.debug("Prepared branch list to try", language=lang, branches=branches_to_try)
+
         # Try each branch
         success = False
         for branch in branches_to_try:
@@ -133,11 +151,13 @@ def main():
                 break
 
         if not success:
+            Log.warn("Failed to download tags after trying all branches", language=lang, tried_branches=branches_to_try)
             print(f"Failed to download tags for {lang} after trying all branches")
 
         # Be nice to GitHub's API
         time.sleep(0.1)
 
+    Log.info("Language tags processing completed", total_languages=total, successful_downloads=successes)
     print(f"All language tags processed. Downloaded {successes}/{total} successfully.")
 
 

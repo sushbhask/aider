@@ -1484,152 +1484,48 @@ class Commands:
     def cmd_report(self, args):
         "Report a problem by opening a GitHub Issue"
         from aider.report import report_github_issue
+from treebeardhq import Log
 
-        announcements = "\n".join(self.coder.get_announcements())
-        issue_text = announcements
-
-        if args.strip():
-            title = args.strip()
-        else:
-            title = None
-
-        report_github_issue(issue_text, title=title, confirm=False)
-
-    def cmd_editor(self, initial_content=""):
-        "Open an editor to write a prompt"
-
-        user_input = pipe_editor(initial_content, suffix="md", editor=self.editor)
-        if user_input.strip():
-            self.io.set_placeholder(user_input.rstrip())
-
-    def cmd_edit(self, args=""):
-        "Alias for /editor: Open an editor to write a prompt"
-        return self.cmd_editor(args)
-
-    def cmd_think_tokens(self, args):
-        "Set the thinking token budget (supports formats like 8096, 8k, 10.5k, 0.5M)"
-        model = self.coder.main_model
-
-        if not args.strip():
-            # Display current value if no args are provided
-            formatted_budget = model.get_thinking_tokens()
-            if formatted_budget is None:
-                self.io.tool_output("Thinking tokens are not currently set.")
-            else:
-                budget = model.get_raw_thinking_tokens()
-                self.io.tool_output(
-                    f"Current thinking token budget: {budget:,} tokens ({formatted_budget})."
-                )
-            return
-
-        value = args.strip()
-        model.set_thinking_tokens(value)
-
-        formatted_budget = model.get_thinking_tokens()
-        budget = model.get_raw_thinking_tokens()
-
-        self.io.tool_output(f"Set thinking token budget to {budget:,} tokens ({formatted_budget}).")
-        self.io.tool_output()
-
-        # Output announcements
-        announcements = "\n".join(self.coder.get_announcements())
-        self.io.tool_output(announcements)
-
-    def cmd_reasoning_effort(self, args):
-        "Set the reasoning effort level (values: number or low/medium/high depending on model)"
-        model = self.coder.main_model
-
-        if not args.strip():
-            # Display current value if no args are provided
-            reasoning_value = model.get_reasoning_effort()
-            if reasoning_value is None:
-                self.io.tool_output("Reasoning effort is not currently set.")
-            else:
-                self.io.tool_output(f"Current reasoning effort: {reasoning_value}")
-            return
-
-        value = args.strip()
-        model.set_reasoning_effort(value)
-        reasoning_value = model.get_reasoning_effort()
-        self.io.tool_output(f"Set reasoning effort to {reasoning_value}")
-        self.io.tool_output()
-
-        # Output announcements
-        announcements = "\n".join(self.coder.get_announcements())
-        self.io.tool_output(announcements)
-
-    def cmd_copy_context(self, args=None):
-        """Copy the current chat context as markdown, suitable to paste into a web UI"""
-
-        chunks = self.coder.format_chat_chunks()
-
-        markdown = ""
-
-        # Only include specified chunks in order
-        for messages in [chunks.repo, chunks.readonly_files, chunks.chat_files]:
-            for msg in messages:
-                # Only include user messages
-                if msg["role"] != "user":
-                    continue
-
-                content = msg["content"]
-
-                # Handle image/multipart content
-                if isinstance(content, list):
-                    for part in content:
-                        if part.get("type") == "text":
-                            markdown += part["text"] + "\n\n"
-                else:
-                    markdown += content + "\n\n"
-
-        args = args or ""
-        markdown += f"""
-Just tell me how to edit the files to make the changes.
-Don't give me back entire files.
-Just show me the edits I need to make.
-
-{args}
-"""
-
-        try:
-            pyperclip.copy(markdown)
-            self.io.tool_output("Copied code context to clipboard.")
-        except pyperclip.PyperclipException as e:
-            self.io.tool_error(f"Failed to copy to clipboard: {str(e)}")
-            self.io.tool_output(
-                "You may need to install xclip or xsel on Linux, or pbcopy on macOS."
-            )
-        except Exception as e:
-            self.io.tool_error(f"An unexpected error occurred while copying to clipboard: {str(e)}")
 
 
 def expand_subdir(file_path):
     if file_path.is_file():
+        Log.debug("Found file in subdir expansion", file_path=file_path)
         yield file_path
         return
 
     if file_path.is_dir():
+        Log.debug("Expanding directory", directory=file_path)
         for file in file_path.rglob("*"):
             if file.is_file():
+                Log.debug("Found file during directory traversal", file=file)
                 yield file
 
 
 def parse_quoted_filenames(args):
+    Log.debug("Parsing quoted filenames", args=args)
     filenames = re.findall(r"\"(.+?)\"|(\S+)", args)
     filenames = [name for sublist in filenames for name in sublist if name]
+    Log.debug("Parsed filenames", count=len(filenames), filenames=filenames)
     return filenames
 
 
 def get_help_md():
+    Log.debug("Getting help markdown")
     md = Commands(None, None).get_help_md()
+    Log.debug("Retrieved help markdown", length=len(md) if md else 0)
     return md
 
 
 def main():
+    Log.info("Starting main function")
     md = get_help_md()
     print(md)
+    Log.info("Completed main function")
 
 
 if __name__ == "__main__":
+    Log.info("Starting command-line execution")
     status = main()
+    Log.info("Exiting with status", status=status)
     sys.exit(status)

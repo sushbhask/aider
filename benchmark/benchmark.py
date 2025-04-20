@@ -29,6 +29,8 @@ from aider import models, sendchat
 from aider.coders import Coder, base_coder
 from aider.dump import dump  # noqa: F401
 from aider.io import InputOutput
+from treebeardhq import Log
+
 
 BENCHMARK_DNAME = Path(os.environ.get("AIDER_BENCHMARK_DIR", "tmp.benchmarks"))
 
@@ -43,7 +45,7 @@ load_dotenv(override=True)
 def find_latest_benchmark_dir():
     benchmark_dirs = [d for d in BENCHMARK_DNAME.iterdir() if d.is_dir()]
     if not benchmark_dirs:
-        print("Error: No benchmark directories found under tmp.benchmarks.")
+        Log.error("No benchmark directories found", benchmark_dir=BENCHMARK_DNAME)
         sys.exit(1)
 
     # Get current time and 24 hours ago
@@ -63,8 +65,10 @@ def find_latest_benchmark_dir():
             # Skip directories that don't match the expected format
             continue
 
+    Log.debug("Found directories from the last 24 hours", count=len(recent_dirs), total_dirs=len(benchmark_dirs))
+    
     if not recent_dirs:
-        print("Error: No benchmark directories found from the last 24 hours.")
+        Log.error("No benchmark directories found from the last 24 hours", benchmark_dir=BENCHMARK_DNAME)
         sys.exit(1)
 
     # Find directory with most recently modified .md file
@@ -81,14 +85,15 @@ def find_latest_benchmark_dir():
                     latest_dir = d
 
     if not latest_dir:
-        print("Error: No .md files found in recent benchmark directories.")
+        Log.error("No .md files found in recent benchmark directories", recent_dirs=recent_dirs)
         sys.exit(1)
 
-    print(f"Using the most recently updated benchmark directory: {latest_dir.name}")
+    Log.info("Found latest benchmark directory", directory=latest_dir.name, last_modified_time=datetime.datetime.fromtimestamp(latest_time))
     return latest_dir
 
 
 def show_stats(dirnames, graphs, stats_languages=None):
+    Log.info("Showing statistics for benchmark directories", directories=dirnames, graphs=graphs, languages=stats_languages)
     raw_rows = []
     for dirname in dirnames:
         row = summarize_results(dirname, stats_languages)
@@ -103,18 +108,23 @@ def show_stats(dirnames, graphs, stats_languages=None):
             continue
 
         if row.completed_tests != row.total_tests:
-            print(
-                f"Warning: {row.dir_name} is incomplete: {row.completed_tests} of {row.total_tests}"
-            )
+            Log.warn("Incomplete benchmark directory", 
+                     dir_name=row.dir_name, 
+                     completed=row.completed_tests, 
+                     total=row.total_tests)
 
         try:
             kind = (row.model, row.edit_format)
         except AttributeError:
+            Log.error("Missing required attributes in benchmark row", row=row)
             return
 
         if kind in seen:
-            dump(row.dir_name)
-            dump(seen[kind])
+            Log.warn("Duplicate benchmark configuration found", 
+                     model=row.model, 
+                     edit_format=row.edit_format, 
+                     dir_name=row.dir_name, 
+                     previous_dir=seen[kind])
             return
 
         seen[kind] = row.dir_name
@@ -127,6 +137,7 @@ def show_stats(dirnames, graphs, stats_languages=None):
 
     # dump(df)
     if graphs:
+        Log.info("Generating benchmark graphs", record_count=len(df))
         # plot_timing(df)
         # plot_outcomes(df, repeats, repeat_hi, repeat_lo, repeat_avg)
         # plot_outcomes_claude(df)
@@ -134,15 +145,26 @@ def show_stats(dirnames, graphs, stats_languages=None):
 
 
 def resolve_dirname(dirname, use_single_prior, make_new):
+    Log.debug("Resolving benchmark directory name", 
+              dirname=dirname, 
+              use_single_prior=use_single_prior, 
+              make_new=make_new)
+    
     if len(dirname.parts) > 1:
+        Log.debug("Using fully specified directory path", dirname=dirname)
         return dirname
 
     priors = list(BENCHMARK_DNAME.glob(f"*--{dirname}"))
+    
     if len(priors) == 1 and use_single_prior:
         dirname = priors[0].name
-        print(f"Using pre-existing {dirname}")
+        Log.info("Using existing benchmark directory", dirname=dirname)
     elif len(priors):
         if not make_new:
+            Log.warn("Multiple prior benchmark runs exist", 
+                     dirname=dirname, 
+                     count=len(priors), 
+                     prior_dirs=priors)
             print(f"Prior runs of {dirname} exist, use --new or name one explicitly")
             print()
             for prior in priors:
@@ -153,6 +175,7 @@ def resolve_dirname(dirname, use_single_prior, make_new):
         now = datetime.datetime.now()
         now = now.strftime("%Y-%m-%d-%H-%M-%S--")
         dirname = now + dirname.name
+        Log.info("Created timestamped directory name", dirname=dirname)
 
     dirname = BENCHMARK_DNAME / dirname
     return dirname
@@ -210,19 +233,26 @@ def main(
         EXERCISES_DIR_DEFAULT, "--exercises-dir", help="Directory with exercise files"
     ),
 ):
+    Log.info("Starting benchmark main command", 
+             dirnames=dirnames, model=model, edit_format=edit_format, 
+             stats_only=stats_only, diffs_only=diffs_only, threads=threads)
+    
     repo = git.Repo(search_parent_directories=True)
     commit_hash = repo.head.object.hexsha[:7]
     if repo.is_dirty():
         commit_hash += "-dirty"
+    Log.debug("Got git repository information", commit_hash=commit_hash)
 
     if stats_only and not dirnames:
         latest_dir = find_latest_benchmark_dir()
         dirnames = [str(latest_dir)]
+        Log.debug("No dirnames provided with stats_only, using latest benchmark directory", latest_dir=latest_dir)
 
     if dirnames is None:
         dirnames = []
 
     if len(dirnames) > 1 and not (stats_only or diffs_only):
+        Log.error("Multiple directories provided without stats or diffs flag", count=len(dirnames))
         print("Only provide 1 dirname unless running with --stats or --diffs")
         return 1
 
@@ -231,19 +261,26 @@ def main(
         dirname = Path(dirname)
         dirname = resolve_dirname(dirname, stats_only or cont, make_new)
         if not dirname:
+            Log.error("Failed to resolve dirname", original_dirname=dirname)
             return 1
         updated_dirnames.append(dirname)
+    
+    Log.debug("Resolved benchmark directories", updated_dirnames=updated_dirnames)
 
     if stats_only:
+        Log.info("Running statistics mode only", num_dirs=len(updated_dirnames))
         return show_stats(updated_dirnames, graphs, stats_languages)
 
     if diffs_only:
+        Log.info("Running diffs mode only", num_dirs=len(updated_dirnames))
         return show_diffs(updated_dirnames)
 
     assert len(updated_dirnames) == 1, updated_dirnames
     dirname = updated_dirnames[0]
+    Log.debug("Using benchmark directory", dirname=dirname)
 
     if "AIDER_DOCKER" not in os.environ:
+        Log.warn("Not running in Docker container - potentially unsafe")
         print("Warning: benchmarking runs unvetted code from GPT, run in a docker container")
         return
 
@@ -255,13 +292,14 @@ def main(
 
         # Get available language dirs
         lang_dirs = [d for d in base_dir.iterdir() if d.is_dir()]
-
+        
         # Filter to requested languages if specified
         if languages:
             requested = set(lang.strip().lower() for lang in languages.split(","))
             lang_dirs = [d for d in lang_dirs if d.name.lower() in requested]
             dump(lang_dirs)
             if not lang_dirs:
+                Log.warn("No language directories found matching filter", requested_languages=requested)
                 print(f"No matching language directories found for: {languages}")
                 return []
 
@@ -271,7 +309,8 @@ def main(
             practice_dir = lang_dir / "exercises" / "practice"
             if practice_dir.exists():
                 exercise_dirs.extend(d for d in practice_dir.iterdir() if d.is_dir())
-
+        
+        Log.debug("Found exercise directories", count=len(exercise_dirs), languages=languages)
         return exercise_dirs
 
     original_dname = BENCHMARK_DNAME / exercises_dir
@@ -280,14 +319,17 @@ def main(
     exercise_dirs = get_exercise_dirs(original_dname, languages)
 
     if not exercise_dirs:
+        Log.error("No exercise directories found")
         print("No exercise directories found")
         return 1
 
     if clean and dirname.exists():
+        Log.info("Cleaning up existing directory", dirname=dirname)
         print("Cleaning up and replacing", dirname)
         dir_files = set(fn.name for fn in dirname.glob("*"))
         original_files = set(fn.name for fn in original_dname.glob("*"))
         if dir_files != original_files:
+            Log.error("Directory structure mismatch during cleanup", dirname=dirname)
             print("ERROR: will not delete dir that does not look like original tests", dirname)
             return
 
@@ -295,10 +337,12 @@ def main(
         if dest.exists():
             old_now = datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
             dest = dirname.parent / "OLD" / (old_now + dirname.name)
-
+        
+        Log.debug("Moving existing directory", source=dirname, destination=dest)
         dirname.rename(dest)
 
     if not dirname.exists():
+        Log.info("Creating new benchmark directory", source=original_dname, destination=dirname)
         print(f"Copying {original_dname} -> {dirname} ...")
         # Only copy the practice subdirs with exercises
         os.makedirs(dirname, exist_ok=True)
@@ -313,10 +357,12 @@ def main(
         print("...done")
 
     test_dnames = sorted(str(d.relative_to(original_dname)) for d in exercise_dirs)
+    Log.debug("Found test directories", count=len(test_dnames))
 
     resource_metadata = importlib_resources.files("aider.resources").joinpath("model-metadata.json")
     model_metadata_files_loaded = models.register_litellm_models([resource_metadata])
     dump(model_metadata_files_loaded)
+    Log.debug("Registered LiteLLM models", files_loaded=model_metadata_files_loaded)
 
     if read_model_settings:
         try:
@@ -326,27 +372,39 @@ def main(
                     print(f"Loaded model settings from: {files_loaded[0]}")
                 else:
                     print(f"No model settings loaded from: {read_model_settings}")
+            Log.info("Loaded model settings", files_loaded=files_loaded, settings_file=read_model_settings)
         except Exception as e:
+            Log.error("Failed to load model settings", error=e, settings_file=read_model_settings)
             print(f"Error loading model settings: {e}")
             return 1
 
     if keywords:
-        keywords = keywords.split(",")
-        test_dnames = [dn for dn in test_dnames for keyword in keywords if keyword in dn]
+        keywords_list = keywords.split(",")
+        original_count = len(test_dnames)
+        test_dnames = [dn for dn in test_dnames for keyword in keywords_list if keyword in dn]
+        Log.info("Filtered test directories by keywords", 
+                keywords=keywords_list, 
+                original_count=original_count, 
+                filtered_count=len(test_dnames))
 
     random.shuffle(test_dnames)
     if num_tests > 0:
+        original_count = len(test_dnames)
         test_dnames = test_dnames[:num_tests]
+        Log.info("Limited number of tests", requested=num_tests, original=original_count, actual=len(test_dnames))
 
     # Don't give up when benchmarking
     LONG_TIMEOUT = 24 * 60 * 60
     sendchat.RETRY_TIMEOUT = LONG_TIMEOUT
     base_coder.RETRY_TIMEOUT = LONG_TIMEOUT
     models.RETRY_TIMEOUT = LONG_TIMEOUT
+    Log.debug("Set retry timeouts for benchmark", timeout_seconds=LONG_TIMEOUT)
 
     if threads == 1:
+        Log.info("Starting single-threaded test execution", test_count=len(test_dnames))
         all_results = []
         for test_path in test_dnames:
+            Log.debug("Executing test", test_path=test_path)
             results = run_test(
                 original_dname,
                 dirname / test_path,
@@ -366,11 +424,15 @@ def main(
 
             all_results.append(results)
             summarize_results(dirname)
+            Log.debug("Test completed", test_path=test_path, results=results)
             if sleep:
+                Log.debug("Sleeping between tests", sleep_seconds=sleep)
                 time.sleep(sleep)
     else:
+        Log.info("Starting multi-threaded test execution", threads=threads, test_count=len(test_dnames))
         run_test_threaded = lox.thread(threads)(run_test)
         for test_path in test_dnames:
+            Log.debug("Scheduling threaded test", test_path=test_path)
             run_test_threaded.scatter(
                 original_dname,
                 dirname / test_path,
@@ -385,11 +447,13 @@ def main(
                 editor_model,
                 editor_edit_format,
             )
+        Log.debug("Gathering results from threaded tests")
         all_results = run_test_threaded.gather(tqdm=True)
 
     print()
     print()
     print()
+    Log.info("All tests completed", result_count=len(all_results))
     summarize_results(dirname)
 
     return 0
@@ -397,35 +461,40 @@ def main(
 
 def show_diffs(dirnames):
     dirnames = sorted(dirnames)
-
+    
+    Log.debug("Loading results for directories", dirnames=dirnames)
     all_results = dict((dirname, load_results(dirname)) for dirname in dirnames)
+    
     testcases = set()
     for results in all_results.values():
         testcases.update(result["testcase"] for result in results)
-
+    
     testcases = sorted(testcases)
-
+    Log.debug("Found testcases", count=len(testcases))
+    
     unchanged = set()
-
+    
     for testcase in testcases:
         all_outcomes = []
         for dirname in dirnames:
             results = all_results[dirname]
             result = [r for r in results if r["testcase"] == testcase][0]
-
+            
             outcomes = tuple(result["tests_outcomes"])
             all_outcomes.append(True in outcomes)
-
+        
         if len(set(all_outcomes)) == 1:
             unchanged.add(testcase)
             continue
-
+        
         print()
         print(testcase)
         for outcome, dirname in zip(all_outcomes, dirnames):
             print(outcome, f"{dirname}/{testcase}/.aider.chat.history.md")
-
+    
     changed = set(testcases) - unchanged
+    Log.info("Completed diff analysis", changed_count=len(changed), unchanged_count=len(unchanged))
+    
     print()
     print("changed:", len(changed), ",".join(sorted(changed)))
     print()
@@ -435,34 +504,49 @@ def show_diffs(dirnames):
 def load_results(dirname, stats_languages=None):
     dirname = Path(dirname)
     all_results = []
-
+    
+    Log.debug("Loading results from directory", dirname=str(dirname), stats_languages=stats_languages)
+    
     if stats_languages:
         languages = [lang.strip().lower() for lang in stats_languages.split(",")]
         glob_patterns = [f"{lang}/exercises/practice/*/.aider.results.json" for lang in languages]
+        Log.debug("Using language-specific glob patterns", languages=languages, patterns=glob_patterns)
     else:
         glob_patterns = ["*/exercises/practice/*/.aider.results.json"]
-
+    
+    file_count = 0
+    error_count = 0
+    
     for pattern in glob_patterns:
         for fname in dirname.glob(pattern):
             try:
                 results = json.loads(fname.read_text())
                 all_results.append(results)
+                file_count += 1
             except json.JSONDecodeError:
+                error_count += 1
+                Log.warn("JSON decode error", filename=str(fname))
                 print("json.JSONDecodeError", fname)
                 continue
+    
+    Log.info("Loaded result files", count=file_count, error_count=error_count)
     return all_results
 
 
 def summarize_results(dirname, stats_languages=None):
+    Log.info("Starting to summarize results", dirname=dirname, stats_languages=stats_languages)
     all_results = load_results(dirname, stats_languages)
+    Log.debug("Loaded results", result_count=len(all_results))
 
     res = SimpleNamespace()
     res.total_tests = len(list(Path(dirname).glob("*/exercises/practice/*")))
+    Log.debug("Found total tests", total_tests=res.total_tests)
 
     try:
         tries = max(len(results.get("tests_outcomes", [])) for results in all_results if results)
     except ValueError:
         tries = 0
+    Log.debug("Determined number of tries", tries=tries)
 
     res.dir_name = str(dirname)
 
@@ -515,16 +599,17 @@ def summarize_results(dirname, stats_languages=None):
                 variants[key].add(val)
 
     if not res.completed_tests:
+        Log.info("No completed tests found, returning early", dirname=dirname)
         return
 
-    # if res.completed_tests < 133:
-    #    return
+    Log.debug("Processed all results", completed_tests=res.completed_tests, variants=variants)
 
     console = Console(highlight=False)
     console.rule(title=str(dirname))
 
     commit_hashes = variants["commit_hash"]
     versions = get_versions(commit_hashes)
+    Log.debug("Retrieved versions from commit hashes", versions=versions, commit_hashes=commit_hashes)
     date = dirname.name[:10]
 
     def show(stat, red="red"):
@@ -597,10 +682,19 @@ def summarize_results(dirname, stats_languages=None):
     console.rule()
 
     # print(json.dumps(vars(res), indent=4, sort_keys=True))
+    Log.info("Completed summarizing results", 
+             completed_tests=res.completed_tests, 
+             total_tests=res.total_tests,
+             pass_rates=percents,
+             cost=res.cost, 
+             avg_cost=res.avg_cost,
+             projected_cost=projected_cost,
+             duration=res.duration)
     return res
 
 
 def get_versions(commit_hashes):
+    Log.debug("Getting versions from commit hashes", commit_hashes=commit_hashes)
     versions = set()
     for hsh in commit_hashes:
         if not hsh:
@@ -612,12 +706,15 @@ def get_versions(commit_hashes):
             )
             version = re.search(r'__version__ = "(.*)"', version).group(1)
             versions.add(version)
-        except subprocess.CalledProcessError:
+            Log.debug("Found version for commit hash", commit_hash=hsh, version=version)
+        except subprocess.CalledProcessError as e:
+            Log.warn("Failed to get version for commit hash", commit_hash=hsh, error=e)
             pass
     return versions
 
 
 def get_replayed_content(replay_dname, test_dname):
+    Log.debug("Getting replayed content", replay_dname=replay_dname, test_dname=test_dname)
     replay_dname = Path(replay_dname)
     test_dname = Path(test_dname)
     dump(replay_dname, test_dname)
@@ -627,6 +724,7 @@ def get_replayed_content(replay_dname, test_dname):
     dump(replay_fname)
 
     res = replay_fname.read_text()
+    Log.debug("Read replay content", file=replay_fname, content_length=len(res))
     return res
 
     res = res.splitlines(keepends=True)
@@ -635,9 +733,13 @@ def get_replayed_content(replay_dname, test_dname):
 
 
 def run_test(original_dname, testdir, *args, **kwargs):
+    Log.info("Running test", original_dname=original_dname, testdir=testdir)
     try:
-        return run_test_real(original_dname, testdir, *args, **kwargs)
+        result = run_test_real(original_dname, testdir, *args, **kwargs)
+        Log.info("Test completed successfully", testdir=testdir)
+        return result
     except Exception as err:
+        Log.error("Test failed with exception", error=err, testdir=testdir)
         print("=" * 40)
         print("Test failed")
         print(err)
@@ -665,7 +767,13 @@ def run_test_real(
     sleep=0,
     read_model_settings=None,
 ):
+    Log.debug("Starting test run", 
+              testdir=testdir, 
+              model_name=model_name, 
+              edit_format=edit_format)
+              
     if not os.path.isdir(testdir):
+        Log.warn("Test directory does not exist", testdir=testdir)
         print("Not a dir:", testdir)
         return
 
@@ -680,14 +788,17 @@ def run_test_real(
             # if res.get("test_timeouts", 0) > 0:
             #    print(f"{results_fname} test timeouts, redoing...")
             # else:
+            Log.debug("Found existing results file, returning", filename=str(results_fname))
             return res
         except JSONDecodeError:
+            Log.warn("Failed to parse results file", filename=str(results_fname))
             print(f"{results_fname} failed to parse, redoing...")
 
     # Read solution and test files from config
     fnames = []
     config_file = testdir / ".meta/config.json"
     if not config_file.exists():
+        Log.error("No config file found", config_file=str(config_file))
         raise ValueError(f"No config file found: {config_file}")
 
     with open(config_file) as f:
@@ -697,6 +808,11 @@ def run_test_real(
     test_files = config.get("files", {}).get("test", [])
     example_files = config.get("files", {}).get("example", [])
     solution_files = set(config.get("files", {}).get("solution", []))
+
+    Log.debug("Loaded file configuration", 
+             test_files_count=len(test_files), 
+             example_files_count=len(example_files), 
+             solution_files_count=len(solution_files))
 
     # Forcibly ignore certain files not covered by test_files and example_files
     ignore_files = set(
@@ -716,6 +832,8 @@ def run_test_real(
 
     # Remove any ignore files from the solution set that LLM will edit
     solution_files.difference_update(ignore_files)
+    
+    Log.debug("Final solution files after filtering", solution_files_count=len(solution_files))
 
     # Copy all solution files
     for file_path in solution_files:
@@ -736,7 +854,9 @@ def run_test_real(
             if original_fname.exists():
                 os.makedirs(src.parent, exist_ok=True)
                 shutil.copy(original_fname, src)
+                Log.debug("Restored original file", source=str(original_fname), destination=str(src))
         else:
+            Log.warn("Solution file not found", file_path=file_path)
             print(f"Warning: Solution file not found: {src}")
 
     file_list = " ".join(fname.name for fname in fnames)
@@ -752,6 +872,7 @@ def run_test_real(
         instructions += instructions_append.read_text()
 
     instructions += prompts.instructions_addendum.format(file_list=file_list)
+    Log.debug("Prepared instructions", instructions_length=len(instructions))
 
     io = InputOutput(
         pretty=True,
@@ -781,6 +902,12 @@ def run_test_real(
     dump(edit_format)
     show_fnames = ",".join(map(str, fnames))
     print("fnames:", show_fnames)
+    
+    Log.info("Initializing Coder", 
+             model=main_model.name, 
+             edit_format=edit_format, 
+             file_count=len(fnames),
+             num_ctx=num_ctx)
 
     coder = Coder.create(
         main_model,
@@ -808,12 +935,20 @@ def run_test_real(
 
     dur = 0
     test_outcomes = []
+    
+    Log.info("Test environment setup complete", 
+             testdir=str(testdir), 
+             files_to_edit=len(fnames),
+             ignore_files_count=len(ignore_files))
     for i in range(tries):
+        Log.info("Starting test run iteration", iteration=i, total_tries=tries)
         start = time.time()
 
         if no_aider:
+            Log.debug("Skipping aider run (no_aider=True)")
             pass
         elif replay:
+            Log.info("Running in replay mode", replay=replay)
             response = get_replayed_content(replay, testdir)
             coder.partial_response_content = response
 
@@ -823,9 +958,11 @@ def run_test_real(
 
             coder.apply_updates()
         else:
+            Log.info("Running aider with instructions", instruction_length=len(instructions))
             response = coder.run(with_message=instructions, preproc=False)
 
         dur += time.time() - start
+        Log.debug("Time taken for execution", duration_seconds=time.time() - start, total_duration=dur)
 
         if not no_aider:
             pat = r"^[+]? *[#].* [.][.][.] "
@@ -833,14 +970,18 @@ def run_test_real(
             dump(response)
             lazy_comments += len(re.findall(pat, response, re.MULTILINE))
             dump(lazy_comments)
+            Log.debug("Lazy comments analysis completed", lazy_comments_count=lazy_comments)
 
         if coder.last_keyboard_interrupt:
+            Log.warn("Keyboard interrupt detected, stopping execution")
             raise KeyboardInterrupt
 
         if no_unit_tests:
+            Log.debug("Skipping unit tests (no_unit_tests=True)")
             break
 
         try:
+            Log.info("Running unit tests", test_files=test_files)
             errors = run_unit_tests(original_dname, testdir, history_fname, test_files)
         except subprocess.TimeoutExpired:
             # try:
@@ -848,11 +989,14 @@ def run_test_real(
             # except subprocess.TimeoutExpired:
             errors = "Tests timed out!"
             timeouts += 1
+            Log.warn("Unit tests timed out", timeout_count=timeouts)
 
         if errors:
             test_outcomes.append(False)
+            Log.info("Tests failed", iteration=i)
         else:
             test_outcomes.append(True)
+            Log.info("Tests passed successfully", iteration=i)
             break
 
         if replay:
@@ -862,13 +1006,19 @@ def run_test_real(
 
         syntax_errors += sum(1 for line in errors if line.startswith("SyntaxError"))
         indentation_errors += sum(1 for line in errors if line.startswith("IndentationError"))
+        Log.debug("Error analysis completed", 
+                 syntax_errors_count=syntax_errors, 
+                 indentation_errors_count=indentation_errors)
 
         print(errors[-1])
         errors = "\n".join(errors)
         instructions = errors
         instructions += prompts.test_failures.format(file_list=file_list)
+        Log.debug("Updated instructions for next iteration", instructions_length=len(instructions))
 
     # Clean up build directories after all attempts
+    Log.info("Beginning cleanup of build directories")
+    
     # Rust target/debug
     target_dir = testdir / "target" / "debug"
     if target_dir.exists():
@@ -876,9 +1026,11 @@ def run_test_real(
             shutil.rmtree(target_dir)
             if verbose:
                 print(f"Cleaned up Rust target/debug directory: {target_dir}")
+            Log.debug("Cleaned up Rust target/debug directory", directory=str(target_dir))
         except (OSError, shutil.Error, PermissionError) as e:
             if verbose:
                 print(f"Failed to clean up Rust target/debug directory: {e}")
+            Log.warn("Failed to clean up Rust target/debug directory", error=e, directory=str(target_dir))
 
     # Java build directories
     java_build_dir = testdir / "build"
@@ -887,9 +1039,11 @@ def run_test_real(
             shutil.rmtree(java_build_dir)
             if verbose:
                 print(f"Cleaned up Java build directory: {java_build_dir}")
+            Log.debug("Cleaned up Java build directory", directory=str(java_build_dir))
         except (OSError, shutil.Error, PermissionError) as e:
             if verbose:
                 print(f"Failed to clean up Java build directory: {e}")
+            Log.warn("Failed to clean up Java build directory", error=e, directory=str(java_build_dir))
 
     # Node.js node_modules directories
     node_modules_dir = testdir / "node_modules"
@@ -898,9 +1052,11 @@ def run_test_real(
             shutil.rmtree(node_modules_dir)
             if verbose:
                 print(f"Cleaned up Node.js node_modules directory: {node_modules_dir}")
+            Log.debug("Cleaned up Node.js node_modules directory", directory=str(node_modules_dir))
         except (OSError, shutil.Error, PermissionError) as e:
             if verbose:
                 print(f"Failed to clean up Node.js node_modules directory: {e}")
+            Log.warn("Failed to clean up Node.js node_modules directory", error=e, directory=str(node_modules_dir))
 
     results = dict(
         testdir=str(testdir),
@@ -931,6 +1087,14 @@ def run_test_real(
         results["editor_model"] = main_model.editor_model.name if main_model.editor_model else None
         results["editor_edit_format"] = main_model.editor_edit_format
     dump(results)
+    
+    Log.info("Test run completed", 
+             test_outcomes=test_outcomes, 
+             duration=dur, 
+             timeouts=timeouts, 
+             syntax_errors=syntax_errors, 
+             indentation_errors=indentation_errors,
+             lazy_comments=lazy_comments)
 
     results_fname.write_text(json.dumps(results, indent=4))
 
@@ -952,6 +1116,7 @@ def run_unit_tests(original_dname, testdir, history_fname, test_files):
 
     # Get unique file extensions from test files
     extensions = {Path(f).suffix for f in test_files}
+    Log.debug("Determined file extensions for tests", extensions=extensions)
 
     # Find matching test command
     command = None
@@ -961,9 +1126,13 @@ def run_unit_tests(original_dname, testdir, history_fname, test_files):
             break
 
     if not command:
+        Log.error("No test command found for extensions", extensions=extensions)
         raise ValueError(f"No test command found for files with extensions: {extensions}")
 
+    Log.info("Selected test command", command=command)
+
     # Copy test files from original directory
+    files_copied = 0
     for file_path in test_files:
         src = original_dname / Path(*testdir.parts[-4:]) / file_path
         dst = testdir / file_path
@@ -971,40 +1140,55 @@ def run_unit_tests(original_dname, testdir, history_fname, test_files):
             print("copying", src, dst)
             os.makedirs(dst.parent, exist_ok=True)
             shutil.copy(src, dst)
+            files_copied += 1
+    
+    Log.debug("Copied test files", count=files_copied, total_files=len(test_files))
 
     # Remove @Disabled annotations from Java test files
+    java_files_modified = 0
     for file_path in test_files:
         if file_path.endswith(".java"):
             test_file = testdir / file_path
             if test_file.exists():
                 content = test_file.read_text()
-                content = re.sub(r"@Disabled\([^)]*\)\s*\n", "", content)
-                test_file.write_text(content)
+                modified_content = re.sub(r"@Disabled\([^)]*\)\s*\n", "", content)
+                if content != modified_content:
+                    test_file.write_text(modified_content)
+                    java_files_modified += 1
+
+    if java_files_modified > 0:
+        Log.debug("Removed @Disabled annotations from Java test files", count=java_files_modified)
 
     print(" ".join(command))
 
-    result = subprocess.run(
-        command,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        timeout=timeout,
-        cwd=testdir,
-        encoding="utf-8",
-        errors="replace",
-    )
+    try:
+        result = subprocess.run(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=timeout,
+            cwd=testdir,
+            encoding="utf-8",
+            errors="replace",
+        )
 
-    success = result.returncode == 0
-    res = result.stdout
-    res = cleanup_test_output(res, testdir)
-    dump(res)
+        success = result.returncode == 0
+        res = result.stdout
+        res = cleanup_test_output(res, testdir)
+        dump(res)
 
-    with history_fname.open("a") as fh:
-        fh.write(f"```\n{res}\n```")
+        with history_fname.open("a") as fh:
+            fh.write(f"```\n{res}\n```")
 
-    if not success:
-        print(f"Tests failed: {testdir}")
-        return res
+        Log.info("Test execution completed", success=success, return_code=result.returncode)
+
+        if not success:
+            print(f"Tests failed: {testdir}")
+            return res
+    except subprocess.TimeoutExpired as e:
+        Log.error("Test execution timed out", error=e, timeout=timeout, command=command)
+        raise
 
 
 def cleanup_test_output(output, testdir):
