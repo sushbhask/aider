@@ -2,23 +2,30 @@ import difflib
 import sys
 
 from .dump import dump  # noqa: F401
+from treebeardhq import Log
+
 
 
 def main():
     if len(sys.argv) != 3:
+        Log.error("Incorrect number of arguments", expected=3, actual=len(sys.argv))
         print("Usage: python diffs.py file1 file")
         sys.exit(1)
 
     file_orig, file_updated = sys.argv[1], sys.argv[2]
+    Log.info("Starting file comparison", file_orig=file_orig, file_updated=file_updated)
 
     with open(file_orig, "r", encoding="utf-8") as f:
         lines_orig = f.readlines()
-
+    
     with open(file_updated, "r", encoding="utf-8") as f:
         lines_updated = f.readlines()
+    
+    Log.debug("Files loaded for comparison", orig_lines=len(lines_orig), updated_lines=len(lines_updated))
 
     for i in range(len(file_updated)):
         res = diff_partial_update(lines_orig, lines_updated[:i])
+        Log.debug("Generated diff for partial update", iteration=i, result_length=len(res))
         print(res)
         input()
 
@@ -49,6 +56,8 @@ def diff_partial_update(lines_orig, lines_updated, final=False, fname=None):
 
     # dump(lines_orig)
     # dump(lines_updated)
+    
+    Log.debug("Starting diff_partial_update", orig_lines_count=len(lines_orig), updated_lines_count=len(lines_updated), final=final)
 
     assert_newlines(lines_orig)
 
@@ -58,9 +67,11 @@ def diff_partial_update(lines_orig, lines_updated, final=False, fname=None):
         last_non_deleted = num_orig_lines
     else:
         last_non_deleted = find_last_non_deleted(lines_orig, lines_updated)
+        Log.debug("Found last non-deleted line", last_non_deleted=last_non_deleted)
 
     # dump(last_non_deleted)
     if last_non_deleted is None:
+        Log.debug("No non-deleted lines found, returning empty string")
         return ""
 
     if num_orig_lines:
@@ -98,12 +109,15 @@ def diff_partial_update(lines_orig, lines_updated, final=False, fname=None):
     show += f"{backticks}\n\n"
 
     # print(diff)
+    
+    Log.debug("Completed diff_partial_update", result_length=len(show))
 
     return show
 
 
 def find_last_non_deleted(lines_orig, lines_updated):
     diff = list(difflib.ndiff(lines_orig, lines_updated))
+    Log.debug("Generated ndiff", diff_lines=len(diff))
 
     num_orig = 0
     last_non_deleted_orig = None
@@ -121,6 +135,7 @@ def find_last_non_deleted(lines_orig, lines_updated):
             # line only in updated
             pass
 
+    Log.debug("Computed last non-deleted line", last_non_deleted=last_non_deleted_orig, total_orig_lines=num_orig)
     return last_non_deleted_orig
 
 
