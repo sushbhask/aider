@@ -16,6 +16,8 @@ import tempfile
 from rich.console import Console
 
 from aider.dump import dump  # noqa
+from treebeardhq import Log
+
 
 DEFAULT_EDITOR_NIX = "vi"
 DEFAULT_EDITOR_OS_X = "vim"
@@ -57,11 +59,15 @@ def write_temp_file(
     kwargs = {"prefix": prefix, "dir": dir}
     if suffix:
         kwargs["suffix"] = f".{suffix}"
+    
+    Log.debug("Creating temporary file", suffix=suffix, prefix=prefix, dir=dir)
     fd, filepath = tempfile.mkstemp(**kwargs)
     try:
         with os.fdopen(fd, "w") as f:
             f.write(input_data)
-    except Exception:
+        Log.debug("Temporary file created successfully", filepath=filepath, content_length=len(input_data))
+    except Exception as e:
+        Log.error("Failed to write to temporary file", error=e, filepath=filepath)
         os.close(fd)
         raise
     return filepath
@@ -83,6 +89,7 @@ def get_environment_editor(default=None):
     :rtype: str or None
     """
     editor = os.environ.get("VISUAL", os.environ.get("EDITOR", default))
+    Log.debug("Retrieved editor from environment", editor=editor, visual=os.environ.get("VISUAL"), editor_env=os.environ.get("EDITOR"), default=default)
     return editor
 
 
@@ -103,11 +110,15 @@ def discover_editor(editor_override=None):
         default_editor = DEFAULT_EDITOR_OS_X
     else:
         default_editor = DEFAULT_EDITOR_NIX
+    
+    Log.debug("Determined system default editor", system=system, default_editor=default_editor)
 
     if editor_override:
         editor = editor_override
+        Log.debug("Using editor override", editor_override=editor_override)
     else:
         editor = get_environment_editor(default_editor)
+        Log.debug("Using editor from environment", editor=editor)
 
     return editor
 
@@ -127,16 +138,22 @@ def pipe_editor(input_data="", suffix=None, editor=None):
     :return: The edited content after the editor is closed
     :rtype: str
     """
+    Log.info("Opening content in system editor", content_length=len(input_data), suffix=suffix, editor=editor)
     filepath = write_temp_file(input_data, suffix)
     command_str = discover_editor(editor)
     command_str += " " + filepath
-
+    
+    Log.debug("Executing editor command", command=command_str, filepath=filepath)
     subprocess.call(command_str, shell=True)
+    
     with open(filepath, "r") as f:
         output_data = f.read()
+    
     try:
         os.remove(filepath)
-    except PermissionError:
+        Log.debug("Temporary file removed", filepath=filepath)
+    except PermissionError as e:
+        Log.warn("Failed to delete temporary file", error=e, filepath=filepath)
         print_status_message(
             False,
             (
@@ -144,4 +161,6 @@ def pipe_editor(input_data="", suffix=None, editor=None):
                 " manually."
             ),
         )
+    
+    Log.info("Editor session completed", original_length=len(input_data), edited_length=len(output_data))
     return output_data
