@@ -6,6 +6,8 @@ import matplotlib.pyplot as plt
 import yaml
 from imgcat import imgcat
 from matplotlib import rc
+from treebeardhq import Log
+
 
 
 @dataclass
@@ -76,8 +78,13 @@ class BenchmarkPlotter:
         plt.rcParams["text.color"] = "#444444"
 
     def load_data(self, yaml_file: str) -> List[ModelData]:
-        with open(yaml_file, "r") as file:
-            data = yaml.safe_load(file)
+        Log.info("Loading model data from YAML file", yaml_file=yaml_file)
+        try:
+            with open(yaml_file, "r") as file:
+                data = yaml.safe_load(file)
+        except Exception as e:
+            Log.error("Failed to load or parse YAML file", error=e, file_path=yaml_file)
+            raise
 
         models = []
         for entry in data:
@@ -88,6 +95,8 @@ class BenchmarkPlotter:
                     pass_rate=entry["pass_rate_2"],
                 )
                 models.append(model)
+        
+        Log.debug("Finished loading model data", model_count=len(models))
         return models
 
     def create_figure(self) -> Tuple[plt.Figure, plt.Axes]:
@@ -99,12 +108,15 @@ class BenchmarkPlotter:
         return fig, ax
 
     def plot_model_series(self, ax: plt.Axes, models: List[ModelData]):
+        Log.info("Plotting model performance series", model_count=len(models))
         # Group models by color
         color_groups: Dict[str, List[ModelData]] = {}
         for model in models:
             if model.color not in color_groups:
                 color_groups[model.color] = []
             color_groups[model.color].append(model)
+        
+        Log.debug("Grouped models by color", group_count=len(color_groups))
 
         # Plot each color group
         for color, group in color_groups.items():
@@ -129,6 +141,11 @@ class BenchmarkPlotter:
                 alpha=0.8,
                 fontsize=self.LABEL_FONT_SIZE,
             )
+            
+            Log.debug("Plotted model group", color=color, model_count=len(sorted_group), 
+                     first_model=first_model.name, first_model_rate=first_model.pass_rate)
+
+        Log.info("Completed plotting all model series", total_models=len(models), group_count=len(color_groups))
 
     def set_labels_and_style(self, ax: plt.Axes):
         ax.set_xlabel("Model release date", fontsize=18, color="#555")
@@ -141,19 +158,27 @@ class BenchmarkPlotter:
         plt.tight_layout(pad=1.0)
 
     def save_and_display(self, fig: plt.Figure):
-        plt.savefig("aider/website/assets/models-over-time.png")
-        plt.savefig("aider/website/assets/models-over-time.svg")
-        imgcat(fig)
+        Log.info("Saving benchmark plot to files")
+        try:
+            plt.savefig("aider/website/assets/models-over-time.png")
+            plt.savefig("aider/website/assets/models-over-time.svg")
+            Log.debug("Successfully saved plot files")
+            imgcat(fig)
+        except Exception as e:
+            Log.error("Error saving plot files", error=e)
 
     def plot(self, yaml_file: str):
+        Log.info("Starting benchmark plotting process", yaml_file=yaml_file)
         models = self.load_data(yaml_file)
         fig, ax = self.create_figure()
         self.plot_model_series(ax, models)
         self.set_labels_and_style(ax)
         self.save_and_display(fig)
+        Log.info("Benchmark plotting completed", model_count=len(models))
 
 
 def main():
+    Log.info("Starting benchmark plotter")
     plotter = BenchmarkPlotter()
     models = plotter.load_data("aider/website/_data/edit_leaderboard.yml")
 
@@ -162,6 +187,7 @@ def main():
         print(f"{model.release_date}: {model.name}")
 
     plotter.plot("aider/website/_data/edit_leaderboard.yml")
+    Log.info("Benchmark plotting completed")
 
 
 if __name__ == "__main__":
