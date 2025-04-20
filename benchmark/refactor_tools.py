@@ -7,6 +7,8 @@ import sys
 from pathlib import Path
 
 from aider.dump import dump  # noqa: F401
+from treebeardhq import Log
+
 
 
 class ParentNodeTransformer(ast.NodeTransformer):
@@ -21,6 +23,7 @@ class ParentNodeTransformer(ast.NodeTransformer):
 
 
 def verify_full_func_at_top_level(tree, func, func_children):
+    Log.debug("Verifying top level function", func=func, expected_children=func_children)
     func_nodes = [
         item for item in ast.walk(tree) if isinstance(item, ast.FunctionDef) and item.name == func
     ]
@@ -32,6 +35,7 @@ def verify_full_func_at_top_level(tree, func, func_children):
 
         num_children = sum(1 for _ in ast.walk(func_node))
         pct_diff_children = abs(num_children - func_children) * 100 / func_children
+        Log.debug("Evaluated function nodes", num_children=num_children, pct_diff=pct_diff_children)
         assert (
             pct_diff_children < 10
         ), f"Old method had {func_children} children, new method has {num_children}"
@@ -41,6 +45,7 @@ def verify_full_func_at_top_level(tree, func, func_children):
 
 
 def verify_old_class_children(tree, old_class, old_class_children):
+    Log.debug("Verifying old class children", old_class=old_class, expected_children=old_class_children)
     node = next(
         (
             item
@@ -54,20 +59,26 @@ def verify_old_class_children(tree, old_class, old_class_children):
     num_children = sum(1 for _ in ast.walk(node))
 
     pct_diff_children = abs(num_children - old_class_children) * 100 / old_class_children
+    Log.debug("Evaluated class nodes", num_children=num_children, pct_diff=pct_diff_children)
     assert (
         pct_diff_children < 10
     ), f"Old class had {old_class_children} children, new class has {num_children}"
 
 
 def verify_refactor(fname, func, func_children, old_class, old_class_children):
-    with open(fname, "r") as file:
-        file_contents = file.read()
-    tree = ast.parse(file_contents)
-    ParentNodeTransformer().visit(tree)  # Set parent attribute for all nodes
+    Log.info("Verifying refactoring", fname=fname, func=func, old_class=old_class)
+    try:
+        with open(fname, "r") as file:
+            file_contents = file.read()
+        tree = ast.parse(file_contents)
+        ParentNodeTransformer().visit(tree)  # Set parent attribute for all nodes
 
-    verify_full_func_at_top_level(tree, func, func_children)
-
-    verify_old_class_children(tree, old_class, old_class_children - func_children)
+        verify_full_func_at_top_level(tree, func, func_children)
+        verify_old_class_children(tree, old_class, old_class_children - func_children)
+        Log.info("Refactoring verification completed successfully", fname=fname, func=func, old_class=old_class)
+    except Exception as e:
+        Log.error("Error verifying refactoring", error=e, fname=fname, func=func, old_class=old_class)
+        raise
 
 
 ############################
@@ -102,15 +113,19 @@ class SelfUsageChecker(ast.NodeVisitor):
                     num_child_nodes,
                 )
                 self.non_self_methods.append(res)
+                Log.debug("Found method not using self", class_name=self.parent_class_name, method_name=node.name, 
+                          num_child_nodes=num_child_nodes, class_children=self.num_class_children)
         self.generic_visit(node)
 
     def visit_ClassDef(self, node):
         self.parent_class_name = node.name
         self.num_class_children = sum(1 for _ in ast.walk(node))
+        Log.debug("Visiting class definition", class_name=node.name, num_children=self.num_class_children)
         self.generic_visit(node)
 
 
 def find_python_files(path):
+    Log.debug("Finding Python files", path=path)
     if os.path.isfile(path) and path.endswith(".py"):
         return [path]
     elif os.path.isdir(path):
@@ -120,41 +135,53 @@ def find_python_files(path):
                 if file.endswith(".py"):
                     full_path = os.path.join(root, file)
                     py_files.append(full_path)
+        Log.debug("Found Python files in directory", path=path, count=len(py_files))
         return py_files
     else:
+        Log.warn("Invalid path provided", path=path)
         return []
 
 
 def find_non_self_methods(path):
+    Log.info("Finding methods that don't use 'self'", path=path)
     python_files = find_python_files(path)
     non_self_methods = []
     for filename in python_files:
         with open(filename, "r") as file:
             try:
                 node = ast.parse(file.read(), filename=filename)
-            except:
+            except Exception as e:
+                Log.error("Failed to parse Python file", error=e, filename=filename)
                 pass
             checker = SelfUsageChecker()
             checker.visit(node)
             for method in checker.non_self_methods:
                 non_self_methods.append([filename] + list(method))
 
+    Log.info("Completed search for methods not using 'self'", path=path, methods_found=len(non_self_methods))
     return non_self_methods
 
 
 def process(entry):
     fname, class_name, method_name, class_children, method_children = entry
+    Log.debug("Processing potential refactoring candidate", fname=fname, class_name=class_name, 
+              method_name=method_name, class_children=class_children, method_children=method_children)
+    
     if method_children > class_children / 2:
+        Log.debug("Skipping: method is too large relative to class", method_children=method_children, class_children=class_children)
         return
     if method_children < 250:
+        Log.debug("Skipping: method is too small", method_children=method_children)
         return
 
     fname = Path(fname)
     if "test" in fname.stem:
+        Log.debug("Skipping: test file", fname=fname)
         return
 
-    print(f"{fname} {class_name} {method_name} {class_children} {method_children}")
-
+    Log.info("Found refactoring candidate", fname=fname, class_name=class_name, method_name=method_name, 
+             class_children=class_children, method_children=method_children)
+    
     dname = Path("tmp.benchmarks/refactor-benchmark-spyder")
     dname.mkdir(exist_ok=True)
 
@@ -194,16 +221,27 @@ class TheTest(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 """)
+    Log.info("Created refactoring benchmark", output_dir=str(dname))
 
 
 def main(paths):
+    Log.info("Starting to process paths for non-self methods", paths=paths)
+    methods_count = 0
+    processed_count = 0
+    
     for path in paths:
         methods = find_non_self_methods(path)
         # methods = sorted(methods, key=lambda x: x[4])
+        methods_count += len(methods)
+        Log.debug("Found non-self methods in path", path=path, methods_count=len(methods))
 
         for method in methods:
             process(method)
+            processed_count += 1
+    
+    Log.info("Completed processing paths", total_paths=len(paths), total_methods=methods_count, processed_methods=processed_count)
 
 
 if __name__ == "__main__":
+    Log.debug("Script executed directly", argv=sys.argv[1:])
     main(sys.argv[1:])
