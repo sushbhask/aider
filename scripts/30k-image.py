@@ -10,7 +10,9 @@ import math
 import os
 import random
 from pathlib import Path
+from treebeardhq import Log
 
+# Default colors for the celebration image
 # Default colors for the celebration image
 AIDER_GREEN = "#14b014"
 AIDER_BLUE = "#4C6EF5"
@@ -32,19 +34,24 @@ def embed_font():
 
     # If font file doesn't exist, return empty string
     if not font_path.exists():
-        print(f"Warning: Font file not found at {font_path}")
+        Log.warn("Font file not found", font_path=font_path)
         return ""
 
     # Read and encode the font file
-    with open(font_path, "rb") as f:
-        font_data = f.read()
-
-    # Return base64 encoded font data
-    return base64.b64encode(font_data).decode("utf-8")
+    try:
+        with open(font_path, "rb") as f:
+            font_data = f.read()
+        Log.debug("Font file successfully loaded", font_path=font_path, size_bytes=len(font_data))
+        # Return base64 encoded font data
+        return base64.b64encode(font_data).decode("utf-8")
+    except Exception as e:
+        Log.error("Error reading or encoding font file", error=e, font_path=font_path)
+        return ""
 
 
 def generate_confetti(count=150, width=DEFAULT_WIDTH, height=DEFAULT_HEIGHT):
     """Generate SVG confetti elements for the celebration."""
+    Log.debug("Generating confetti elements", count=count, width=width, height=height)
     confetti = []
     colors = [AIDER_GREEN, AIDER_BLUE, GOLD_COLOR, "#e74c3c", "#9b59b6", "#3498db", "#2ecc71"]
 
@@ -127,14 +134,22 @@ def generate_confetti(count=150, width=DEFAULT_WIDTH, height=DEFAULT_HEIGHT):
 
         confetti.append(shape)
 
+    if confetti_count < count:
+        Log.warn("Could not generate requested number of confetti", requested=count, actual=confetti_count, attempts=attempts)
+    else:
+        Log.debug("Successfully generated confetti", count=confetti_count, attempts=attempts)
+
     return "\n".join(confetti)
 
 
 def generate_celebration_svg(output_path=None, width=DEFAULT_WIDTH, height=DEFAULT_HEIGHT):
     """Generate a celebratory SVG for 30K GitHub stars."""
+    Log.debug("Starting to generate celebration SVG", width=width, height=height, output_path=output_path)
 
     # Font embedding
     font_data = embed_font()
+    Log.debug("Font data embedded", font_data_length=len(font_data) if font_data else 0)
+    
     font_face = f"""
     @font-face {{
         font-family: 'GlassTTYVT220';
@@ -146,6 +161,7 @@ def generate_celebration_svg(output_path=None, width=DEFAULT_WIDTH, height=DEFAU
 
     # Generate confetti elements
     confetti = generate_confetti(count=150, width=width, height=height)
+    Log.debug("Confetti elements generated", confetti_length=len(confetti) if confetti else 0)
 
     # Create the SVG content
     svg_content = f"""<?xml version="1.0" encoding="UTF-8" standalone="no"?>
@@ -194,12 +210,18 @@ def generate_celebration_svg(output_path=None, width=DEFAULT_WIDTH, height=DEFAU
   </g>
 </svg>
 """
+    Log.debug("SVG content created", svg_content_length=len(svg_content))
 
     # Write to file if output path is specified
     if output_path:
-        with open(output_path, "w") as f:
-            f.write(svg_content)
-        print(f"Celebration SVG saved to {output_path}")
+        try:
+            with open(output_path, "w") as f:
+                f.write(svg_content)
+            Log.info("Celebration SVG saved to file", output_path=output_path)
+            print(f"Celebration SVG saved to {output_path}")
+        except Exception as e:
+            Log.error("Failed to save SVG to file", error=e, output_path=output_path)
+            raise
 
     return svg_content
 
@@ -232,4 +254,5 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # Generate the SVG
+    Log.info("Starting SVG generation from command line", width=args.width, height=args.height, output=args.output)
     generate_celebration_svg(args.output, args.width, args.height)
