@@ -5,6 +5,8 @@ from aider import diffs
 from ..dump import dump  # noqa: F401
 from .base_coder import Coder
 from .wholefile_prompts import WholeFilePrompts
+from treebeardhq import Log
+
 
 
 class WholeFileCoder(Coder):
@@ -17,12 +19,15 @@ class WholeFileCoder(Coder):
         try:
             return self.get_edits(mode="diff")
         except ValueError:
+            Log.debug("Failed to get edits in diff mode, falling back to multi response content", final=final)
             return self.get_multi_response_content_in_progress()
 
     def get_edits(self, mode="update"):
+        Log.debug("Starting to get edits", mode=mode)
         content = self.get_multi_response_content_in_progress()
 
         chat_files = self.get_inchat_relative_files()
+        Log.debug("Retrieved chat files", file_count=len(chat_files), files=chat_files)
 
         output = []
         lines = content.splitlines(keepends=True)
@@ -40,6 +45,7 @@ class WholeFileCoder(Coder):
                     saw_fname = None
 
                     full_path = self.abs_root_path(fname)
+                    Log.debug("Ending code block", fname=fname, fname_source=fname_source, line_count=len(new_lines))
 
                     if mode == "diff":
                         output += self.do_live_diff(full_path, new_lines, True)
@@ -63,12 +69,14 @@ class WholeFileCoder(Coder):
 
                     # Issue #1232
                     if len(fname) > 250:
+                        Log.warn("Filename exceeds maximum length", length=len(fname))
                         fname = ""
 
                     # Did gpt prepend a bogus dir? It especially likes to
                     # include the path/to prefix from the one-shot example in
                     # the prompt.
                     if fname and fname not in chat_files and Path(fname).name in chat_files:
+                        Log.debug("Corrected filename path", original=fname, corrected=Path(fname).name)
                         fname = Path(fname).name
                 if not fname:  # blank line? or ``` was on first line i==0
                     if saw_fname:
@@ -79,9 +87,12 @@ class WholeFileCoder(Coder):
                         fname_source = "chat"
                     else:
                         # TODO: sense which file it is by diff size
+                        Log.error("Missing filename before code block", fence=self.fence[0])
                         raise ValueError(
                             f"No filename provided before {self.fence[0]} in file listing"
                         )
+                
+                Log.debug("Starting new code block", fname=fname, fname_source=fname_source)
 
             elif fname is not None:
                 new_lines.append(line)
@@ -92,6 +103,7 @@ class WholeFileCoder(Coder):
                         quoted_chat_file = f"`{chat_file}`"
                         if word == quoted_chat_file:
                             saw_fname = chat_file
+                            Log.debug("Found filename reference in text", fname=chat_file)
 
                 output.append(line)
 
@@ -99,10 +111,12 @@ class WholeFileCoder(Coder):
             if fname is not None:
                 # ending an existing block
                 full_path = (Path(self.root) / fname).absolute()
+                Log.debug("Processing final code block for diff", fname=fname, line_count=len(new_lines))
                 output += self.do_live_diff(full_path, new_lines, False)
             return "\n".join(output)
 
         if fname:
+            Log.debug("Adding final edit", fname=fname, fname_source=fname_source, line_count=len(new_lines))
             edits.append((fname, fname_source, new_lines))
 
         seen = set()
@@ -119,12 +133,14 @@ class WholeFileCoder(Coder):
                 seen.add(fname)
                 refined_edits.append((fname, fname_source, new_lines))
 
+        Log.info("Completed edit processing", mode=mode, edit_count=len(refined_edits), sources=[e[1] for e in refined_edits])
         return refined_edits
 
     def apply_edits(self, edits):
         for path, fname_source, new_lines in edits:
             full_path = self.abs_root_path(path)
             new_lines = "".join(new_lines)
+            Log.info("Writing edits to file", path=path, source=fname_source, length=len(new_lines))
             self.io.write_text(full_path, new_lines)
 
     def do_live_diff(self, full_path, new_lines, final):
@@ -132,6 +148,7 @@ class WholeFileCoder(Coder):
             orig_lines = self.io.read_text(full_path)
             if orig_lines is not None:
                 orig_lines = orig_lines.splitlines(keepends=True)
+                Log.debug("Generating diff", path=full_path, original_lines=len(orig_lines), new_lines=len(new_lines), final=final)
 
                 show_diff = diffs.diff_partial_update(
                     orig_lines,
@@ -140,5 +157,6 @@ class WholeFileCoder(Coder):
                 ).splitlines()
                 return show_diff
 
+        Log.debug("No existing file to diff against, returning raw content", path=full_path)
         output = ["```"] + new_lines + ["```"]
         return output
